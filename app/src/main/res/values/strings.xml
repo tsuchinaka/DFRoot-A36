@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DFRoot</string>
+    <string name="toolbar_subtitle">DirtyFrag · CVE-2026-43284 · SM-A366E</string>
+
+    <string name="section_status">Status</string>
+    <string name="section_log">Log</string>
+
+    <string name="tab_settings">Settings</string>
+    <string name="tab_log">Log</string>
+    <string name="tab_about">About</string>
+
+    <string name="about_heading">About</string>
+    <string name="about_version">2.0-md3 · DirtyFrag · CVE-2026-43284</string>
+    <string name="about_summary">Ephemeral root for the Galaxy A36 (SM-A366E). The exploit chain is credited to the researchers below; this build ports and packages it.</string>
+    <string name="about_credits_heading">Credits</string>
+    <string name="about_tap_hint">Tap a card to open the contributor on GitHub.</string>
+    <string name="about_open_hint">Open on GitHub</string>
+    <string name="about_disclaimer">Independent research project. Flashing and rooting can brick or trip security features — use on your own device and at your own risk.</string>
+
+    <string name="status_kernel">kernel</string>
+    <string name="status_device">device</string>
+    <string name="status_root">root</string>
+    <string name="status_su">su</string>
+    <string name="status_manager">KernelSU Manager</string>
+
+    <string name="root_checking">checking…</string>
+    <string name="root_live">LIVE</string>
+    <string name="root_inactive">not active</string>
+    <string name="root_not_granted">installed, not granted to this app</string>
+
+    <string name="su_checking">—</string>
+    <string name="su_ok">answered uid=0</string>
+    <string name="su_refused">%1$s</string>
+
+    <string name="manager_present">installed (%1$s)</string>
+    <string name="manager_absent">not installed</string>
+
+    <string name="action_jailbreak">Jailbreak</string>
+    <string name="action_jailbreak_again">Jailbreak again</string>
+    <string name="action_running">Running…</string>
+    <string name="action_auto_root">Auto-jailbreak on boot</string>
+    <string name="already_running">A run is already in flight.</string>
+    <string name="log_placeholder">Press Jailbreak to start.</string>
+    <string name="auto_enabled">Auto-jailbreak on boot: enabled</string>
+    <string name="auto_disabled">Auto-jailbreak on boot: disabled</string>
+
+    <string name="grant_hint">This app is not on KernelSU\'s allowlist, so su is refused and root cannot be verified from here — KernelSU hides every file-based signal from app domains. Open KernelSU Manager and add DFRoot to its superuser list, then return to this screen.</string>
+    <string name="waiting_for_install">ksud finishes the KernelSU install after the chain returns; waiting for su to answer…</string>
+    <string name="still_installing">…still installing (%1$ds)</string>
+
+    <string name="result_success">Root is live — su now resolves to KernelSU.</string>
+    <string name="result_installed_not_granted">Root is installed, but su is refused to this app — grant DFRoot in KernelSU Manager to verify it.</string>
+    <string name="result_ksud_failed">ksud exited with an error.</string>
+    <string name="result_patch_failed">Failed to patch files.</string>
+    <string name="result_exception">Exploit threw: %1$s</string>
+</resources>

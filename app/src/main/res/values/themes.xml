@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material 3 Expressive. The whole component set (toolbar, buttons, switch,
+         cards, loading indicator) picks up expressive shapes and motion from here. -->
+    <style name="Theme.DFRoot" parent="Theme.Material3Expressive.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">?attr/isLightTheme</item>
+        <item name="bottomNavigationStyle">@style/Widget.Material3Expressive.BottomNavigationView</item>
+    </style>
+
+    <style name="TextAppearance.DFRoot.Mono" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:lineSpacingMultiplier">1.05</item>
+        <item name="android:fontFamily">monospace</item>
+    </style>
+
+    <!-- Emphasized type scale from M3 Expressive, used for section headers. -->
+    <style name="TextAppearance.DFRoot.Section" parent="TextAppearance.Material3.LabelLarge.Emphasized" />
+
+    <!-- The log pane fills the card and stays selectable. -->
+    <style name="Widget.DFRoot.LogView" parent="">
+        <item name="android:textAppearance">@style/TextAppearance.DFRoot.Mono</item>
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textIsSelectable">true</item>
+    </style>
+</resources>

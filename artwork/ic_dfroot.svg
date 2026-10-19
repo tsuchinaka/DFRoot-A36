@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="108" height="108"
+     viewBox="0 0 108 108"
+     role="img"
+     aria-label="DFRoot: white box with dollar sign on purple">
+
+    <!-- purple background (covers the full adaptive-icon canvas) -->
+    <rect x="0" y="0" width="108" height="108" fill="#6750A4" />
+
+    <!-- foreground kept inside the 66x66 adaptive-icon safe zone -->
+    <g fill="none"
+       stroke="#FFFFFF"
+       stroke-width="6.5"
+       stroke-linecap="round"
+       stroke-linejoin="round">
+        <!-- empty box -->
+        <rect x="21" y="21" width="66" height="66" rx="16" ry="16" />
+        <!-- dollar stem -->
+        <path d="M54 32 L54 76" />
+        <!-- dollar S curve -->
+        <path d="M62 42
+                 C59.5 38.5 56.5 36.5 52.5 36.5
+                 C47 36.5 43 40 43 44.8
+                 C43 50 47.5 52 53.5 53.6
+                 C59.5 55.2 64 57.6 64 63.6
+                 C64 69.5 59 73 53.5 73
+                 C48.5 73 44.5 70.6 42 67" />
+    </g>
+</svg>
