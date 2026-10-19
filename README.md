@@ -7,6 +7,18 @@ answering `uid=0` for the KernelSU install it just dropped. No reboot, no cable.
 This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive.
 
+## Tested on
+
+This is the exact setup it was built and confirmed working against. Other
+kernels and firmware may need a different `dirtyfrag` module.
+
+- Device: Samsung Galaxy A36 5G (`SM-A366E`), Exynos, arm64
+- Android: 15
+- Kernel: `6.6.98-android15-8-33419078-abogkiA366EXXSBCZG3-4k`
+- Firmware: `A366EXXSBCZG3`
+- Module used: `dirtyfrag-android15-6.6.ko`
+
+
 ## What it actually does
 
 The bug lets an unprivileged app corrupt the kernel page cache of a mapped
@@ -127,3 +139,8 @@ A36 port and Compose UI: @tsuchinaka
 
 This is exploit code. It writes to kernel memory. It can brick the device, trip
 Knox, or lose you warranty. Use it on hardware you own and can afford to lose.
+
+I do not condone or endorse doing any of this. It is published for research and
+for people who own the hardware and want to understand how the bug works.
+Please do not run it on a device you do not own, and do not use it to break
+other people's phones.
