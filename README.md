@@ -12,7 +12,7 @@ rebuilt in Jetpack Compose using Material 3 Expressive.
 This is the exact setup it was built and confirmed working against. Other
 kernels and firmware may need a different `dirtyfrag` module.
 
-- Device: Samsung Galaxy A36 5G (`SM-A366E`), Exynos, arm64
+- Device: Samsung Galaxy A36 5G (`SM-A366E`), Snapdragon 6 Gen 3, arm64
 - Android: 15
 - Kernel: `6.6.98-android15-8-33419078-abogkiA366EXXSBCZG3-4k`
 - Firmware: `A366EXXSBCZG3`
