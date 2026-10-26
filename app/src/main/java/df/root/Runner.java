@@ -32,6 +32,9 @@ final class Runner {
     static final int ICV_LEN = 16;
 
     private static final String TAG = "dfroot";
+    private static final String KG_SERVICE = "knoxguard_service";
+    private static final String KG_UNLOCK = "service call " + KG_SERVICE + " 35";
+    private static final String KG_STATE = "service call " + KG_SERVICE + " 29";
     private static final long OVERLAY_CLAIM_TIMEOUT_MS = 120000;
     private static final long OVERLAY_POLL_MS = 3000;
     private static final long OVERLAY_SU_TIMEOUT_MS = 15;
@@ -165,6 +168,52 @@ final class Runner {
             reporter.report("[overlay] did not run (no su, or it timed out)\n");
         } else {
             reporter.report("[overlay] applied\n" + out);
+        }
+
+        applyKgFix(reporter);
+    }
+
+    /**
+     * Knox Guard lives in the TA and only accepts the call from uid 10085
+     * (com.samsung.android.kgclient) holding com.samsung.android.knoxguard.STATUS.
+     * tz_unlockScreen takes no token, so re-exec as that uid. Idempotent: on an
+     * already Active device it returns 0 and changes nothing.
+     */
+    private static void applyKgFix(IReporter reporter) {
+        String unlock = runAndRead(30L, "su", "10085", "-c", KG_UNLOCK);
+        if (unlock == null || unlock.trim().isEmpty()) {
+            unlock = runAndRead(30L, "su", "--mount-master", "-c",
+                    "/system/bin/su 10085 -c '" + KG_UNLOCK + "'");
+        }
+        String ta = runAndRead(20L, "su", "-c", KG_STATE);
+        String prop = runAndRead(20L, "su", "-c", "getprop knox.kg.state");
+        reporter.report("[kg] unlock=" + oneLine(unlock)
+                + " state=" + taState(ta)
+                + " prop=" + oneLine(prop) + "\n");
+    }
+
+    private static String oneLine(String value) {
+        if (value == null) {
+            return "null";
+        }
+        String flat = value.trim().replace('\n', ' ');
+        return flat.length() > 120 ? flat.substring(0, 120) + "..." : flat;
+    }
+
+    private static int taState(String parcel) {
+        if (parcel == null) {
+            return -1;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("([0-9a-fA-F]{8})\\s+([0-9a-fA-F]{8})")
+                .matcher(parcel);
+        if (!m.find()) {
+            return -1;
+        }
+        try {
+            return (int) Long.parseLong(m.group(2), 16);
+        } catch (Throwable t) {
+            return -1;
         }
     }
 
