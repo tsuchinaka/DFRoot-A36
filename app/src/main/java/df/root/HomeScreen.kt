@@ -53,6 +53,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -116,7 +117,7 @@ fun HomeScreen(
         WideStat(
             icon = Icons.Rounded.Memory,
             label = stringResource(R.string.stat_kernel),
-            value = state.kernelVersion.ifEmpty { "—" },
+            value = compactKernel(state.kernelVersion).ifEmpty { "—" },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StatCard(
@@ -309,6 +310,18 @@ private fun StatusHero(state: DfrootState, onRun: () -> Unit) {
     Spacer(Modifier.height(26.dp))
 }
 
+private fun compactKernel(version: String): String {
+    if (version.isEmpty()) {
+        return version
+    }
+    val parts = version.split('-')
+    return if (parts.size > 3) {
+        parts.take(3).joinToString("-")
+    } else {
+        version
+    }
+}
+
 @Composable
 private fun WideStat(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -335,14 +348,18 @@ private fun WideStat(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                softWrap = false,
             )
+            Spacer(Modifier.width(12.dp))
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f),
             )
         }
     }
