@@ -94,6 +94,18 @@ so and tells you to add DFRoot to the KernelSU superuser list. The app shows
 Auto jailbreak on boot is a switch in Settings. It enables the boot receiver
 component, nothing else.
 
+## ADB trigger
+
+The same chain can be started from an adb shell without tapping the UI:
+
+```sh
+adb shell am broadcast -a df.root.action.ROOT -n df.root/.RootReceiver --receiver-foreground
+```
+
+The receiver is exported but requires `android.permission.DUMP`, which the adb
+shell holds and ordinary apps do not. Watch `adb logcat -s dfroot`, then check
+`adb shell su -c id`.
+
 ## Notes and gotchas
 
 - Never `rmmod kernelsu`. It panics the kernel and takes USB down with it.
