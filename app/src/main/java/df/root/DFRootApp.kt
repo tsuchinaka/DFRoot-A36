@@ -40,10 +40,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -126,17 +124,16 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         fabMenuExpanded = false
                     },
                     icon = { Icon(Icons.Rounded.Shield, contentDescription = null) },
-                    text = {
-                        Text(
-                            text = stringResource(R.string.tab_home),
-                            fontWeight = if (tabs[tab] == Tab.Home) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    },
-                    containerColor = Color.Transparent,
-                    contentColor = if (tabs[tab] == Tab.Home) {
-                        MaterialTheme.colorScheme.primary
+                    text = { Text(stringResource(R.string.tab_home)) },
+                    containerColor = if (tabs[tab] == Tab.Home) {
+                        MaterialTheme.colorScheme.secondaryContainer
                     } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    contentColor = if (tabs[tab] == Tab.Home) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
                     },
                 )
                 FloatingActionButtonMenuItem(
@@ -145,17 +142,16 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         fabMenuExpanded = false
                     },
                     icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
-                    text = {
-                        Text(
-                            text = stringResource(R.string.tab_log),
-                            fontWeight = if (tabs[tab] == Tab.Log) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    },
-                    containerColor = Color.Transparent,
-                    contentColor = if (tabs[tab] == Tab.Log) {
-                        MaterialTheme.colorScheme.primary
+                    text = { Text(stringResource(R.string.tab_log)) },
+                    containerColor = if (tabs[tab] == Tab.Log) {
+                        MaterialTheme.colorScheme.secondaryContainer
                     } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    contentColor = if (tabs[tab] == Tab.Log) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
                     },
                 )
                 FloatingActionButtonMenuItem(
@@ -164,17 +160,16 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         fabMenuExpanded = false
                     },
                     icon = { Icon(Icons.Filled.Info, contentDescription = null) },
-                    text = {
-                        Text(
-                            text = stringResource(R.string.tab_about),
-                            fontWeight = if (tabs[tab] == Tab.About) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    },
-                    containerColor = Color.Transparent,
-                    contentColor = if (tabs[tab] == Tab.About) {
-                        MaterialTheme.colorScheme.primary
+                    text = { Text(stringResource(R.string.tab_about)) },
+                    containerColor = if (tabs[tab] == Tab.About) {
+                        MaterialTheme.colorScheme.secondaryContainer
                     } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    contentColor = if (tabs[tab] == Tab.About) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
                     },
                 )
             }
