@@ -156,6 +156,7 @@ fun HomeScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 2.dp),
         )
+        Spacer(Modifier.height(96.dp))
     }
 }
 

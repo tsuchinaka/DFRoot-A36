@@ -161,6 +161,7 @@ fun AboutScreen() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp),
         )
+        Spacer(Modifier.height(96.dp))
     }
 }
 

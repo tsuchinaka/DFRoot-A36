@@ -124,7 +124,7 @@ fun LogScreen(log: String) {
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(scroll)
-                            .padding(16.dp),
+                            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,

@@ -76,7 +76,7 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
         Box(Modifier.fillMaxSize().padding(padding)) {
             AnimatedContent(
                 targetState = tab,
-                modifier = Modifier.fillMaxSize().padding(bottom = 96.dp),
+                modifier = Modifier.fillMaxSize(),
                 transitionSpec = {
                     val forward = targetState > initialState
                     val offset = { full: Int -> if (forward) full / 10 else -full / 10 }
