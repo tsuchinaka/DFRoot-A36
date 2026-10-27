@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Info
@@ -26,7 +25,6 @@ import androidx.compose.material3.ShortNavigationBar
 import androidx.compose.material3.ShortNavigationBarItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -65,16 +63,11 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             Box(Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
-                Surface(
+                ShortNavigationBar(
+                    containerColor = Color.Transparent,
+                    windowInsets = WindowInsets(0, 0, 0, 0),
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                    shape = RoundedCornerShape(32.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    tonalElevation = 3.dp,
-                    shadowElevation = 10.dp,
                 ) {
-                    ShortNavigationBar(
-                        containerColor = Color.Transparent,
-                    ) {
                     ShortNavigationBarItem(
                         selected = tabs[tab] == Tab.Home,
                         onClick = { tab = Tab.Home.ordinal },
@@ -95,7 +88,6 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         icon = { Icon(Icons.Filled.Info, contentDescription = null) },
                         label = { Text(stringResource(R.string.tab_about)) },
                     )
-                }
                 }
             }
         },
