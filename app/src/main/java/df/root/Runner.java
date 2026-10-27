@@ -163,11 +163,16 @@ final class Runner {
         }
         reporter.report("[overlay] su usable after " + attempts + " check(s)\n");
 
-        String out = runAndRead(90L, "su", "--mount-master", "-c", "sh /data/dfroot/apply.sh");
-        if (out == null) {
-            reporter.report("[overlay] did not run (no su, or it timed out)\n");
+        File applyScript = new File("/data/dfroot/apply.sh");
+        if (!applyScript.exists()) {
+            reporter.report("[overlay] " + applyScript + " not present; skipped (KernelSU mounts modules itself)\n");
         } else {
-            reporter.report("[overlay] applied\n" + out);
+            String out = runAndRead(90L, "su", "--mount-master", "-c", "sh " + applyScript);
+            if (out == null) {
+                reporter.report("[overlay] did not run (no su, or it timed out)\n");
+            } else {
+                reporter.report("[overlay] applied\n" + out);
+            }
         }
 
         applyKgFix(reporter);

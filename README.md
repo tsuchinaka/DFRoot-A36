@@ -37,7 +37,9 @@ The pieces are:
 3. `dirtyfrag.ko` goes in via `/vendor/bin/modprobe`, which is why the shell
    needs an empty `PATH` and absolute paths everywhere.
 4. `ksud` runs, KernelSU loads, and `Runner.applyOverlay` does
-   `su --mount-master -c 'sh /data/dfroot/apply.sh'`.
+   `su --mount-master -c 'sh /data/dfroot/apply.sh'` if that script exists.
+   It is optional: nothing in this tree creates it, and KernelSU already mounts
+   modules in the global namespace, so a missing file is skipped, not an error.
 
 ## Features
 
