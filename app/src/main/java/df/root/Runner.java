@@ -35,6 +35,7 @@ final class Runner {
     private static final String KG_SERVICE = "knoxguard_service";
     private static final String KG_UNLOCK = "service call " + KG_SERVICE + " 35";
     private static final String KG_STATE = "service call " + KG_SERVICE + " 29";
+    private static final String KGTA_ASSET = "kgta_helper";
     private static final long OVERLAY_CLAIM_TIMEOUT_MS = 120000;
     private static final long OVERLAY_POLL_MS = 3000;
     private static final long OVERLAY_SU_TIMEOUT_MS = 15;
@@ -102,7 +103,7 @@ final class Runner {
                     aesKey, hmacKey, ICV_LEN, senderPort, ksud.getAbsolutePath(), softReboot);
 
             if (rc == 0) {
-                applyOverlay(reporter, 120000L);
+                applyOverlay(ctx, reporter, 120000L);
             }
             return rc;
         } finally {
@@ -112,12 +113,12 @@ final class Runner {
         }
     }
 
-    static void applyOverlay(IReporter reporter, long maxWaitMillis) {
+    static void applyOverlay(Context ctx, IReporter reporter, long maxWaitMillis) {
         long claimDeadline = System.currentTimeMillis() + OVERLAY_CLAIM_TIMEOUT_MS;
         while (true) {
             if (OVERLAY_RUNNING.compareAndSet(false, true)) {
                 try {
-                    applyOverlayLocked(reporter, maxWaitMillis);
+                    applyOverlayLocked(ctx, reporter, maxWaitMillis);
                     return;
                 } finally {
                     OVERLAY_RUNNING.set(false);
@@ -135,7 +136,7 @@ final class Runner {
         }
     }
 
-    private static void applyOverlayLocked(IReporter reporter, long maxWaitMillis) {
+    private static void applyOverlayLocked(Context ctx, IReporter reporter, long maxWaitMillis) {
         reporter.report("[overlay] ns app=" + readLink("/proc/self/ns/mnt")
                 + " su=" + firstLine(runAndRead(OVERLAY_SU_TIMEOUT_MS, "su", "-c", "readlink /proc/self/ns/mnt"))
                 + " su--mount-master=" + firstLine(runAndRead(OVERLAY_SU_TIMEOUT_MS, "su", "--mount-master", "-c", "readlink /proc/self/ns/mnt"))
@@ -175,16 +176,18 @@ final class Runner {
             }
         }
 
-        applyKgFix(reporter);
+        applyKgFix(ctx, reporter);
     }
 
     /**
-     * Knox Guard lives in the TA and only accepts the call from uid 10085
-     * (com.samsung.android.kgclient) holding com.samsung.android.knoxguard.STATUS.
-     * tz_unlockScreen takes no token, so re-exec as that uid. Idempotent: on an
-     * already Active device it returns 0 and changes nothing.
+     * Two unlock paths. The vendor HAL (vendor.samsung.hardware.tlc.kg-service)
+     * accepts uid 0/1000 and exposes tz_unlockScreen without the KG STATUS
+     * permission, so the root helper works even when the Java service rejects
+     * uid 10085. The Java path still runs afterwards for the lock-screen
+     * unbind and the cached knox.kg.state property. Both are idempotent.
      */
-    private static void applyKgFix(IReporter reporter) {
+    private static void applyKgFix(Context ctx, IReporter reporter) {
+        String hal = runKgtaHelper(ctx, "unlock");
         String unlock = runAndRead(30L, "su", "10085", "-c", KG_UNLOCK);
         if (unlock == null || unlock.trim().isEmpty()) {
             unlock = runAndRead(30L, "su", "--mount-master", "-c",
@@ -192,9 +195,33 @@ final class Runner {
         }
         String ta = runAndRead(20L, "su", "-c", KG_STATE);
         String prop = runAndRead(20L, "su", "-c", "getprop knox.kg.state");
-        reporter.report("[kg] unlock=" + oneLine(unlock)
+        reporter.report("[kg] hal=" + oneLine(hal)
+                + " unlock=" + oneLine(unlock)
                 + " state=" + taState(ta)
                 + " prop=" + oneLine(prop) + "\n");
+    }
+
+    /**
+     * Extract the arm64 helper from assets and run it as root. The helper
+     * dlopens /system/lib64/aidl_comm_kg_client.so and calls the vendor KG
+     * HAL (TZ_KGTA_getKgState / TZ_KGTA_unlockScreen). It returns state/err
+     * and, for "unlock", unlock/err.
+     */
+    private static String runKgtaHelper(Context ctx, String action) {
+        File helper = new File(ctx.getFilesDir(), "kgta_helper");
+        try (InputStream in = ctx.getAssets().open(KGTA_ASSET);
+             OutputStream out = new FileOutputStream(helper)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                out.write(buffer, 0, read);
+            }
+        } catch (IOException e) {
+            return "helper-asset-error: " + e.getMessage();
+        }
+        helper.setReadable(true, false);
+        helper.setExecutable(true, false);
+        return runAndRead(30L, "su", "-c", helper.getAbsolutePath() + " " + action);
     }
 
     private static String oneLine(String value) {

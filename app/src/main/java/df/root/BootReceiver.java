@@ -50,7 +50,7 @@ public class BootReceiver extends BroadcastReceiver implements IReporter {
             Thread t = new Thread(() -> {
                 try {
                     report("boot: " + intent.getAction() + " (chain already ran)\n");
-                    Runner.applyOverlay(this, 300000L);
+                    Runner.applyOverlay(deCtx, this, 300000L);
                 } catch (Throwable e) {
                     report("boot: overlay failed: " + e + "\n");
                 } finally {
