@@ -69,7 +69,7 @@ fun LogScreen(log: String) {
             Column(Modifier.weight(1f)) {
                 Text(
                     text = stringResource(R.string.log_title),
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.displaySmall,
                 )
                 Text(
                     text = stringResource(R.string.log_count, log.lineCount()),

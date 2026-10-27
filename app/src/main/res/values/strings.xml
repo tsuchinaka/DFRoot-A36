@@ -15,6 +15,11 @@
     <string name="home_status_live">ROOT LIVE</string>
     <string name="home_status_installed">INSTALLED · NOT GRANTED</string>
     <string name="home_status_idle">NOT ROOTED</string>
+    <string name="home_status_label">DEVICE STATUS</string>
+    <string name="home_big_checking">…</string>
+    <string name="home_big_live">LIVE</string>
+    <string name="home_big_idle">OFFLINE</string>
+    <string name="home_big_installed">root installed, KernelSU won\'t answer this app</string>
     <string name="home_action_note">No cable. No reboot. Re-run after each cold boot.</string>
     <string name="home_section_device">Device</string>
     <string name="home_section_status">Status</string>

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -60,21 +61,20 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            Surface(
-                modifier = Modifier
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .padding(horizontal = 20.dp, vertical = 10.dp),
-                shape = RoundedCornerShape(32.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                tonalElevation = 3.dp,
-                shadowElevation = 10.dp,
-            ) {
-                ShortNavigationBar(
-                    containerColor = Color.Transparent,
+            Box(Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
+                Surface(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    shape = RoundedCornerShape(32.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    tonalElevation = 3.dp,
+                    shadowElevation = 10.dp,
                 ) {
+                    ShortNavigationBar(
+                        containerColor = Color.Transparent,
+                    ) {
                     ShortNavigationBarItem(
                         selected = tabs[tab] == Tab.Home,
                         onClick = { tab = Tab.Home.ordinal },
@@ -95,6 +95,7 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         icon = { Icon(Icons.Filled.Info, contentDescription = null) },
                         label = { Text(stringResource(R.string.tab_about)) },
                     )
+                }
                 }
             }
         },
