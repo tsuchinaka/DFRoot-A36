@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.4.0-adb` (`versionCode 14`).
+Current internal build: `3.5.0-auto` (`versionCode 15`).
 
 ## Tested on
 
@@ -97,8 +97,8 @@ build does not need to rebuild it.
 ## Features
 
 - One-tap root from the app, or a headless adb broadcast.
-- Auto jailbreak on boot, with retries. Cold boots are hit or miss, so the
-  receiver tries three times.
+- Auto jailbreak on boot and unlock, with an alarm watchdog. Cold boots are
+  hit or miss, so the receiver retries through the unlock phase.
 - Root-only Knox Guard unlock through the vendor HAL, with the Java uid 10085
   path retained for lock-screen cleanup and the state property.
 - Floating FAB menu for Home/Log/About.
@@ -145,8 +145,14 @@ finishes, `su -c id` should return `uid=0`. If KernelSU does not grant the app,
 the status card says so and tells you to add DFRoot to the KernelSU superuser
 list. The app shows `LIVE` only when `su` actually answers.
 
-Auto jailbreak on boot is the switch on Home. It enables the boot receiver
-component, nothing else.
+Auto jailbreak on boot and unlock is the switch on Home. It enables the boot
+receiver component, nothing else. The receiver fires on locked boot,
+boot completed, credential unlock, every lockscreen unlock and reboot actions,
+skips the exploit when su is
+already live or the /dev/df mutex is held, and arms a 90 s alarm watchdog
+that retries until su answers. Boot attempts land in device-protected
+boot.log and are mirrored into run.log once credential storage unlocks,
+so the Log tab shows them.
 
 ## ADB trigger
 

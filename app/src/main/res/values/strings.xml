@@ -26,7 +26,7 @@
     <string name="home_section_device">Device</string>
     <string name="home_section_status">Status</string>
     <string name="home_grant_title">KernelSU is holding it back</string>
-    <string name="home_auto_note">Tries three times on boot, 30 s apart.</string>
+    <string name="home_auto_note">Roots on boot and unlock. Retries on failure.</string>
     <string name="home_footer">Independent research build. Rooting can trip Knox or brick the device.</string>
 
     <string name="stat_kernel">Kernel</string>

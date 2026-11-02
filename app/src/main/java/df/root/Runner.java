@@ -38,7 +38,7 @@ final class Runner {
     private static final String KGTA_ASSET = "kgta_helper";
     private static final long OVERLAY_CLAIM_TIMEOUT_MS = 120000;
     private static final long OVERLAY_POLL_MS = 3000;
-    private static final long OVERLAY_SU_TIMEOUT_MS = 15;
+    private static final long OVERLAY_SU_TIMEOUT_MS = 10;
 
     private static final AtomicBoolean CLAIMED = new AtomicBoolean(false);
     private static final AtomicBoolean OVERLAY_RUNNING = new AtomicBoolean(false);

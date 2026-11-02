@@ -58,6 +58,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 kernelVersion = System.getProperty("os.version") ?: "",
                 deviceModel = android.os.Build.MODEL,
                 autoEnabled = isAutoEnabled(),
+                log = loadBootLogTail(),
             )
         }
         probeJob = viewModelScope.launch {
@@ -166,6 +167,19 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         _state.update { it.copy(running = false, snackbar = message) }
     }
 
+    private fun loadBootLogTail(): String {
+        return try {
+            val de = context.createDeviceProtectedStorageContext()
+            val boot = File(de.filesDir, "boot.log")
+            if (!boot.isFile) return ""
+            val bytes = boot.readBytes()
+            val tail = if (bytes.size > LOG_KEEP) bytes.copyOfRange(bytes.size - LOG_KEEP, bytes.size) else bytes
+            "=== boot.log ===\n" + String(tail, Charsets.UTF_8) + "\n=== end boot.log ===\n"
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
     private fun truncateLog() {
         try {
             FileOutputStream(logFile, false).use { it.write(ByteArray(0)) }
@@ -177,9 +191,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         File("/dev/df").exists() || RootRecord.rootedThisBoot(context)
 
     private fun isAutoEnabled(): Boolean =
-        context.packageManager.getComponentEnabledSetting(
-            ComponentName(context, BootReceiver::class.java)
-        ) == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+        BootReceiver.isAutoEnabled(context)
 
     private fun managerInfo(): Pair<Boolean, String> = try {
         val info = context.packageManager.getPackageInfo("me.weishu.kernelsu", 0)

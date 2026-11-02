@@ -16,11 +16,19 @@ final class RootRecord {
 
     private static final String FILE_NAME = "rooted-at";
 
+    private static File storeDir(Context context) {
+        try {
+            return context.createDeviceProtectedStorageContext().getFilesDir();
+        } catch (Throwable t) {
+            return context.getFilesDir();
+        }
+    }
+
     private RootRecord() {
     }
 
     static void markRooted(Context context) {
-        File file = new File(context.getFilesDir(), FILE_NAME);
+        File file = new File(storeDir(context), FILE_NAME);
         try {
             FileOutputStream out = new FileOutputStream(file, false);
             try {
@@ -33,9 +41,13 @@ final class RootRecord {
     }
 
     static boolean rootedThisBoot(Context context) {
-        File file = new File(context.getFilesDir(), FILE_NAME);
+        File file = new File(storeDir(context), FILE_NAME);
         if (!file.isFile()) {
-            return false;
+            File legacy = new File(context.getFilesDir(), FILE_NAME);
+            if (!legacy.isFile()) {
+                return false;
+            }
+            file = legacy;
         }
         try {
             FileInputStream in = new FileInputStream(file);
