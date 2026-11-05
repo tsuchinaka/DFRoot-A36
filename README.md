@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.5.2-auto` (`versionCode 17`).
+Current internal build: `3.6.0-keep` (`versionCode 18`).
 
 ## Tested on
 
@@ -99,6 +99,12 @@ build does not need to rebuild it.
 - One-tap root from the app, or a headless adb broadcast.
 - Auto jailbreak on boot and unlock, with an alarm watchdog. Cold boots are
   hit or miss, so the receiver retries through the unlock phase.
+- A foreground service stays up for the boot and re-runs the post-root scripts
+  (`/data/dfroot/apply.sh`, `/data/dfroot/*.sh`, KernelSU `service.d`,
+  `post-fs-data.d`, `post-mount.d`, and each module's `service.sh` /
+  `post-fs-data.sh` / `post-mount.sh` / `boot-completed.sh`). A root loop in
+  `/data/adb/service.d/dfroot-keep.sh` starts the service again if Android
+  kills it.
 - Root-only Knox Guard unlock through the vendor HAL, with the Java uid 10085
   path retained for lock-screen cleanup and the state property.
 - Floating FAB menu for Home/Log/About.

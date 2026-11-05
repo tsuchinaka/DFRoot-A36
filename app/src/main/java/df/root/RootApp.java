@@ -14,5 +14,6 @@ public class RootApp extends Application {
     public void onCreate() {
         super.onCreate();
         DynamicColors.applyToActivitiesIfAvailable(this);
+        KeepService.start(this);
     }
 }

@@ -6,4 +6,7 @@
 -keep class df.root.Runner { *; }
 -keep class df.root.RootProbe { *; }
 -keep class df.root.RootRecord { *; }
+-keep class df.root.KeepService { *; }
+-keep class df.root.KeepReceiver { *; }
+-keep class df.root.PostRoot { *; }
 -keep interface df.root.IReporter { *; }

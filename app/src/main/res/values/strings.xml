@@ -87,4 +87,8 @@
     <string name="result_ksud_failed">ksud exited with an error.</string>
     <string name="result_patch_failed">Failed to patch files.</string>
     <string name="result_exception">Exploit threw: %1$s</string>
+
+    <string name="keep_channel">DFRoot</string>
+    <string name="keep_title">DFRoot</string>
+    <string name="keep_text">Post-root scripts running</string>
 </resources>

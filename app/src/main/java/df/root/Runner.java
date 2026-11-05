@@ -54,6 +54,18 @@ final class Runner {
         CLAIMED.set(false);
     }
 
+    static boolean isClaimed() {
+        return CLAIMED.get();
+    }
+
+    static String suScript(long timeoutSeconds, String script) {
+        String out = runAndRead(timeoutSeconds, "su", "--mount-master", "-c", script);
+        if (out == null) {
+            out = runAndRead(timeoutSeconds, "su", "-c", script);
+        }
+        return out;
+    }
+
     static int run(Context ctx, IReporter reporter, boolean softReboot) throws Exception {
         IpSecManager.UdpEncapsulationSocket encapSock = null;
         IpSecManager.SecurityParameterIndex spiObj = null;

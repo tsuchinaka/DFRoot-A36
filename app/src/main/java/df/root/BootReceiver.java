@@ -90,6 +90,7 @@ public class BootReceiver extends BroadcastReceiver implements IReporter {
     public void onReceive(Context context, Intent intent) {
         final Context deCtx = context.createDeviceProtectedStorageContext();
         appCtx = context.getApplicationContext();
+        KeepService.start(appCtx);
         logFile = new File(deCtx.getFilesDir(), "boot.log");
         String action = intent == null ? "null" : String.valueOf(intent.getAction());
 
@@ -205,6 +206,7 @@ public class BootReceiver extends BroadcastReceiver implements IReporter {
                     }
                 }
                 Runner.release();
+                PostRoot.tick(appCtx);
                 pending.finish();
             }
         }, "dfroot-boot");
