@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.5.0-auto` (`versionCode 15`).
+Current internal build: `3.5.1-auto` (`versionCode 16`).
 
 ## Tested on
 
