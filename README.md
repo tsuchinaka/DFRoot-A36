@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.6.0-keep` (`versionCode 18`).
+Current internal build: `3.7.0-ui` (`versionCode 19`).
 
 ## Tested on
 
@@ -88,11 +88,11 @@ build does not need to rebuild it.
 - Home, Log and About live behind a `FloatingActionButtonMenu` at the bottom
   end. There is no bottom navigation bar and no reserved band: content runs
   under the FAB, with scroll clearance inside each screen.
-- Home has the status hero (LIVE / OFFLINE / checking), the compact kernel
-  version, device, `su`, KernelSU, the auto-jailbreak switch and the Run again
-  FAB. The Log tab shows the run log; About shows version, links and credits.
-- Material 3 Expressive theming, dynamic color on Android 12 and up, and
-  `MaterialShapes` decorations in the hero.
+- Home shows LIVE / OFFLINE, the jailbreak button, and one list for kernel,
+  device, `su`, KernelSU and the auto-jailbreak switch.
+- Log keeps `run.log` across runs and can be copied or exported. About is the
+  version, two links and the credit list.
+- Material 3 Expressive theming, dynamic color on Android 12 and up.
 
 ## Features
 

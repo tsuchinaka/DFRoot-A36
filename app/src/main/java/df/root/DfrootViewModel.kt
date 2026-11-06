@@ -58,7 +58,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 kernelVersion = System.getProperty("os.version") ?: "",
                 deviceModel = android.os.Build.MODEL,
                 autoEnabled = isAutoEnabled(),
-                log = loadBootLogTail(),
+                log = loadPersistedLog(),
             )
         }
         probeJob = viewModelScope.launch {
@@ -94,9 +94,8 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
             _state.update { it.copy(snackbar = context.getString(R.string.already_running)) }
             return
         }
-        _state.update { it.copy(running = true, log = "") }
-        truncateLog()
-        report("=== DFRoot a36xq / DirtyFrag CVE-2026-43284 ===\n")
+        _state.update { it.copy(running = true) }
+        report("\n=== DFRoot a36xq / DirtyFrag CVE-2026-43284 ===\n")
 
         runJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
@@ -151,7 +150,8 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     override fun report(msg: String) {
         Log.i(TAG, msg.trim())
         try {
-            FileOutputStream(logFile, true).use { it.write(msg.toByteArray()) }
+            appendRaw(logFile, msg)
+            trimFile(logFile)
         } catch (_: Throwable) {
         }
         val shown = ansi.matcher(msg).replaceAll("")
@@ -167,24 +167,72 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         _state.update { it.copy(running = false, snackbar = message) }
     }
 
-    private fun loadBootLogTail(): String {
+    fun exportLog() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val dir = File(context.cacheDir, "export").apply { mkdirs() }
+                val file = File(dir, "dfroot-log.txt")
+                val text = readText(logFile).ifEmpty { _state.value.log }
+                file.writeText(text)
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.files",
+                    file,
+                )
+                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                    putExtra(android.content.Intent.EXTRA_SUBJECT, "DFRoot log")
+                    clipData = android.content.ClipData.newRawUri("DFRoot log", uri)
+                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    android.content.Intent.createChooser(send, context.getString(R.string.log_export))
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "export log", t)
+                _state.update { it.copy(snackbar = context.getString(R.string.log_export_failed)) }
+            }
+        }
+    }
+
+    private fun loadPersistedLog(): String {
         return try {
-            val de = context.createDeviceProtectedStorageContext()
-            val boot = File(de.filesDir, "boot.log")
-            if (!boot.isFile) return ""
-            val bytes = boot.readBytes()
-            val tail = if (bytes.size > LOG_KEEP) bytes.copyOfRange(bytes.size - LOG_KEEP, bytes.size) else bytes
-            "=== boot.log ===\n" + String(tail, Charsets.UTF_8) + "\n=== end boot.log ===\n"
+            val boot = readText(bootLog())
+            val run = readText(logFile)
+            if (boot.isNotBlank()) {
+                val mark = boot.takeLast(160)
+                if (!run.contains(mark)) {
+                    appendRaw(logFile, if (run.isEmpty()) boot else "\n$boot")
+                }
+            }
+            trimFile(logFile)
+            readText(logFile).takeLast(LOG_KEEP)
         } catch (_: Throwable) {
             ""
         }
     }
 
-    private fun truncateLog() {
-        try {
-            FileOutputStream(logFile, false).use { it.write(ByteArray(0)) }
-        } catch (_: Throwable) {
-        }
+    private fun bootLog(): File {
+        val de = context.createDeviceProtectedStorageContext()
+        return File(de.filesDir, "boot.log")
+    }
+
+    private fun readText(file: File): String {
+        if (!file.isFile) return ""
+        return String(file.readBytes(), Charsets.UTF_8)
+    }
+
+    private fun appendRaw(file: File, text: String) {
+        FileOutputStream(file, true).use { it.write(text.toByteArray()) }
+    }
+
+    private fun trimFile(file: File) {
+        if (!file.isFile || file.length() <= FILE_CAP) return
+        val bytes = file.readBytes()
+        val start = (bytes.size - FILE_KEEP).coerceAtLeast(0)
+        file.writeBytes(bytes.copyOfRange(start, bytes.size))
     }
 
     private fun chainRan(): Boolean =
@@ -211,6 +259,8 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         const val TAG = "dfroot"
         const val LOG_LIMIT = 200000
         const val LOG_KEEP = 100000
+        const val FILE_CAP = 512000
+        const val FILE_KEEP = 256000
         const val ROOT_WAIT_MS = 180000L
         const val PROBE_INTERVAL_MS = 5000L
     }

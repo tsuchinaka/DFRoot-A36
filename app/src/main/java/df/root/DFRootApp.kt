@@ -90,7 +90,7 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         onAutoEnabledChange = vm::setAutoEnabled,
                     )
 
-                    Tab.Log -> LogScreen(log = state.log)
+                    Tab.Log -> LogScreen(log = state.log, onExport = vm::exportLog)
                     Tab.About -> AboutScreen()
                 }
             }

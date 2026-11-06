@@ -39,7 +39,7 @@
 
     <string name="about_heading">About</string>
     <string name="about_build">Version %1$s</string>
-    <string name="about_summary">Ephemeral root for the Galaxy A36 (SM-A366E). The exploit chain is credited to the researchers below; this build ports and packages it, plus the Material 3 Expressive UI.</string>
+    <string name="about_summary">Temporary root for the Galaxy A36 (SM-A366E). The chain is credited below.</string>
     <string name="about_credits_heading">Credits</string>
     <string name="about_tap_hint">Tap a card to open the contributor on GitHub.</string>
     <string name="about_open_hint">Open on GitHub</string>
@@ -73,7 +73,9 @@
     <string name="log_placeholder">Press Jailbreak to start.</string>
     <string name="log_title">Run log</string>
     <string name="log_count">%1$d lines</string>
-    <string name="log_copy">Copy log</string>
+    <string name="log_copy">Copy</string>
+    <string name="log_export">Export</string>
+    <string name="log_export_failed">Could not export the log.</string>
     <string name="log_copied">Log copied</string>
     <string name="auto_enabled">Auto-jailbreak on boot: enabled</string>
     <string name="auto_disabled">Auto-jailbreak on boot: disabled</string>
