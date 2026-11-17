@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.8.0-kg` (`versionCode 20`).
+Current internal build: `3.8.1-kg` (`versionCode 21`).
 
 ## Tested on
 
@@ -81,6 +81,10 @@ system, because the TA state (not the `knox.kg.state` property) is what matters.
   they are actually reachable depends on the receiver's `exported` flag and
   manifest permission, which cannot be confirmed without the device; every
   result is logged to `run.log` as `[kg-broadcast]`.
+- START_KNOXGUARD is skipped when `knox.kg.state` is 2/3/4 (Active, Locked,
+  Completed). On an enrolled device `x1.a.H()` in kgclient only shows
+  "Device has been enrolled. Can't enroll again.", so the nudge would add a
+  toast without changing state. MANUAL_UNLOCK and CUSTOMER_APP still run.
 
 The helper can be rebuilt with:
 
