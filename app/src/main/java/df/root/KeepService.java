@@ -44,6 +44,7 @@ public class KeepService extends Service {
     private static final int KEEP_ALARM_CODE = 1002;
     private static final int RETRY_ALARM_CODE = 1003;
     private static final long KEEP_ALARM_MS = 180000L;
+    private static final long KEEP_ALARM_ROOTED_MS = 600000L;
     private static final long TICK_NO_ROOT_MS = 30000L;
     private static final long TICK_ROOTED_MS = 120000L;
     private static final long TICK_BUSY_MS = 15000L;
@@ -74,7 +75,7 @@ public class KeepService extends Service {
                 Log.w(TAG, "keep start: " + t2);
             }
         }
-        scheduleKeep(ctx);
+        scheduleKeep(ctx, KEEP_ALARM_MS);
     }
 
     /** Enqueue one chain pass; serialized on the dfroot-chain worker. */
@@ -168,7 +169,7 @@ public class KeepService extends Service {
         }
     }
 
-    private static void scheduleKeep(Context ctx) {
+    private static void scheduleKeep(Context ctx, long delayMs) {
         try {
             AlarmManager am = (AlarmManager) ctx.getSystemService(ALARM_SERVICE);
             if (am == null) {
@@ -177,7 +178,7 @@ public class KeepService extends Service {
             Intent i = new Intent(ctx, KeepReceiver.class).setAction(KeepReceiver.ACTION);
             PendingIntent pi = PendingIntent.getBroadcast(ctx, KEEP_ALARM_CODE, i,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-            long at = SystemClock.elapsedRealtime() + KEEP_ALARM_MS;
+            long at = SystemClock.elapsedRealtime() + delayMs;
             try {
                 am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
             } catch (Throwable exactDenied) {
@@ -197,7 +198,7 @@ public class KeepService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         promote();
-        scheduleKeep(this);
+        scheduleKeep(this, currentKeepDelay());
         String chain = intent == null ? null : intent.getStringExtra(EXTRA_CHAIN);
         if (chain != null) {
             final String action = chain;
@@ -217,7 +218,7 @@ public class KeepService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        scheduleKeep(this);
+        scheduleKeep(this, currentKeepDelay());
         start(this);
         super.onTaskRemoved(rootIntent);
     }
@@ -226,7 +227,7 @@ public class KeepService extends Service {
     public void onDestroy() {
         running = false;
         poke();
-        scheduleKeep(this);
+        scheduleKeep(this, currentKeepDelay());
         try {
             unregisterReceiver(pokeReceiver);
         } catch (Throwable ignored) {
@@ -284,10 +285,10 @@ public class KeepService extends Service {
     }
 
     private void ensureWorker() {
+        running = true;
         if (worker != null && worker.isAlive()) {
             return;
         }
-        running = true;
         worker = new Thread(() -> {
             while (running) {
                 long delay;
@@ -335,6 +336,10 @@ public class KeepService extends Service {
         }
         long next = BootChain.nextRetryAt;
         return next == 0L || now > next + RETRY_GRACE_MS;
+    }
+
+    private static long currentKeepDelay() {
+        return knownLive ? KEEP_ALARM_ROOTED_MS : KEEP_ALARM_MS;
     }
 
     private static void poke() {

@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.9.0-boot` (`versionCode 22`).
+Current internal build: `3.9.1-persist` (`versionCode 23`).
 
 ## Tested on
 
@@ -60,31 +60,29 @@ The app does not bypass the TA. After root it uses the same unlock path as the
 system, because the TA state (not the `knox.kg.state` property) is what matters.
 
 - A small arm64 helper (`app/src/main/assets/kgta_helper`, source in
-  `tools/kgta_helper.c`) is extracted to the app's `filesDir` and executed as
+  `tools/kgta_helper.c`) is extracted once per app version and executed as
   root. It `dlopen`s `/system/lib64/aidl_comm_kg_client.so` and calls the vendor
   `vendor.samsung.hardware.tlc.kg.ISehKg` HAL. That HAL accepts uid 0 or 1000
   and sends TA command `0x10a` (`TZ_KGTA_unlockScreen`); it does not require the
   Java `com.samsung.android.knoxguard.STATUS` permission.
 - The Java path still runs afterwards: `su 10085 -c 'service call
   knoxguard_service 35'`. It performs the lock-screen unbind and updates the
-  cached `knox.kg.state` property. Both paths are idempotent.
+  cached `knox.kg.state` property. Both paths are idempotent. The TA state and
+  the property are read in one `su` round-trip after both unlock paths.
 - The state is read from the TA (`service call knoxguard_service 29`); the
   property is only a mirror.
 - On a device without the Samsung KG HAL, the helper fails cleanly and the
   Java path is used. The HAL path is root-only; a normal app cannot reach the
   vendor service.
-- A third, app-domain path is sent first: the decompiled `kgclient` receivers
-  `ServiceIntentReceiver` (MANUAL_UNLOCK), `KGKesReceiver` (START_KNOXGUARD)
-  and `KGIntentReceiver` (CUSTOMER_APP) have no caller check in their code.
-  `KgBroadcast` sends those intents from the app at startup and again through
-  root after the chain, restricted to `com.samsung.android.kgclient`. Whether
-  they are actually reachable depends on the receiver's `exported` flag and
-  manifest permission, which cannot be confirmed without the device; every
-  result is logged to `run.log` as `[kg-broadcast]`.
-- START_KNOXGUARD is skipped when `knox.kg.state` is 2/3/4 (Active, Locked,
-  Completed). On an enrolled device `x1.a.H()` in kgclient only shows
-  "Device has been enrolled. Can't enroll again.", so the nudge would add a
-  toast without changing state. MANUAL_UNLOCK and CUSTOMER_APP still run.
+- The app-domain nudge found in the decompiled `kgclient` receivers runs after
+  the HAL and Java paths, so the client sees the TA already unlocked. Only
+  `ServiceIntentReceiver` (MANUAL_UNLOCK) runs by default: START_KNOXGUARD can
+  open the browser enrollment UI on a device that is not enrolled yet, and
+  CUSTOMER_APP replaces the customer-app slot, so both stay behind the
+  `FULL_NUDGES` switch. The startup nudge fires once per boot (device-protected
+  boot-id marker); results are logged to `run.log` as `[kg-broadcast]`.
+- Whether the receiver is reachable depends on its `exported` flag and manifest
+  permission, which cannot be confirmed without the device.
 
 The helper can be rebuilt with:
 
@@ -129,7 +127,11 @@ build does not need to rebuild it.
   single `su`. The daemon writes a world-readable heartbeat every 30 s, so
   the app verifies the root side without any `su` call while the heartbeat is
   fresh, restarts this app if Android kills it, exits on its own when the
-  boot id changes, and stamps its one-shot work per boot.
+  boot id changes, and stamps its one-shot work per boot. A failed one-shot
+  backs off five minutes instead of retrying every loop, the daemon scripts
+  are staged in device-protected storage first (a root that arrives before
+  unlock still installs them), and the keep alarm relaxes from 3 to 10
+  minutes once the root side is healthy.
 - `ksud` and `kgta_helper` are staged once per app version into both storages,
   so the exploit window does not pay the extraction I/O.
 - Root-only Knox Guard unlock through the vendor HAL, with the Java uid 10085

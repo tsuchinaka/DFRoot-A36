@@ -262,6 +262,6 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         const val FILE_CAP = 512000
         const val FILE_KEEP = 256000
         const val ROOT_WAIT_MS = 180000L
-        const val PROBE_INTERVAL_MS = 5000L
+        const val PROBE_INTERVAL_MS = 15000L
     }
 }

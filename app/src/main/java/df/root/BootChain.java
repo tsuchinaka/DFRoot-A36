@@ -13,7 +13,6 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * One boot pass of the auto-root chain, executed on the single chain worker
@@ -263,33 +262,11 @@ final class BootChain {
         if (!new File("/vendor/lib64/libbinderdebug.so").exists()) {
             return "libbinderdebug";
         }
-        String boot = getprop("sys.boot_completed");
+        String boot = Probes.prop("sys.boot_completed");
         if (!"1".equals(boot)) {
             return "boot_completed=" + boot;
         }
         return null;
-    }
-
-    private static String getprop(String name) {
-        java.lang.Process process = null;
-        try {
-            process = new ProcessBuilder("getprop", name).redirectErrorStream(true).start();
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()));
-            String line = reader.readLine();
-            reader.close();
-            if (process.waitFor(2, TimeUnit.SECONDS)) {
-                return line == null ? "" : line.trim();
-            }
-            process.destroyForcibly();
-            return "";
-        } catch (Throwable t) {
-            return "";
-        } finally {
-            if (process != null) {
-                process.destroy();
-            }
-        }
     }
 
     // --------------------------------------------------------------- wakelock

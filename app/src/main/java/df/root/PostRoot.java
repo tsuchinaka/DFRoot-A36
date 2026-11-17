@@ -90,11 +90,20 @@ final class PostRoot {
                     + "  tag=$(echo \"$f\" | tr / _)\n"
                     + "  stamp=${MARK}$tag\n"
                     + "  [ -f \"$stamp\" ] && return 0\n"
+                    + "  fail=${stamp}.retry\n"
+                    + "  if [ -f \"$fail\" ]; then\n"
+                    + "    n=$(cat \"$fail\" 2>/dev/null)\n"
+                    + "    [ -n \"$n\" ] && [ \"$(date +%s)\" -lt \"$n\" ] && return 0\n"
+                    + "  fi\n"
                     + "  log \"once $f\"\n"
                     + "  timeout 45 sh \"$f\" >>/data/dfroot/log/postroot.log 2>&1\n"
                     + "  rc=$?\n"
                     + "  log \"once $f rc=$rc\"\n"
-                    + "  [ \"$rc\" -eq 0 ] && touch \"$stamp\"\n"
+                    + "  if [ \"$rc\" -eq 0 ]; then\n"
+                    + "    touch \"$stamp\"\n"
+                    + "  else\n"
+                    + "    echo $(( $(date +%s) + 300 )) > \"$fail\"\n"
+                    + "  fi\n"
                     + "}\n"
                     + "while true; do\n"
                     + "  boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
@@ -171,29 +180,45 @@ final class PostRoot {
     }
 
     private static void writeScripts(Context ctx) {
-        String version = String.valueOf(versionCode(ctx));
-        String name = SUP_BASE + version + ".sh";
-        write(new File(ctx.getFilesDir(), name), SUP_SH);
-        write(new File(ctx.getFilesDir(), LOADER_NAME), LOADER_SH);
+        String name = SUP_BASE + versionCode(ctx) + ".sh";
+        Context de = deviceProtected(ctx);
+        write(new File(de.getFilesDir(), name), SUP_SH);
+        write(new File(de.getFilesDir(), LOADER_NAME), LOADER_SH);
+        if (de != ctx) {
+            write(new File(ctx.getFilesDir(), name), SUP_SH);
+            write(new File(ctx.getFilesDir(), LOADER_NAME), LOADER_SH);
+        }
+    }
+
+    private static Context deviceProtected(Context ctx) {
         try {
-            Context de = ctx.createDeviceProtectedStorageContext();
-            write(new File(de.getFilesDir(), name), SUP_SH);
-            write(new File(de.getFilesDir(), LOADER_NAME), LOADER_SH);
-        } catch (Throwable ignored) {
+            return ctx.createDeviceProtectedStorageContext();
+        } catch (Throwable t) {
+            return ctx;
         }
     }
 
     private static String launchScript(Context ctx) {
-        String sup = new File(ctx.getFilesDir(), SUP_BASE + versionCode(ctx) + ".sh")
-                .getAbsolutePath();
-        String loader = new File(ctx.getFilesDir(), LOADER_NAME).getAbsolutePath();
+        Context de = deviceProtected(ctx);
+        String name = SUP_BASE + versionCode(ctx) + ".sh";
+        File sup = new File(de.getFilesDir(), name);
+        if (!sup.isFile()) {
+            sup = new File(ctx.getFilesDir(), name);
+        }
+        File loader = new File(de.getFilesDir(), LOADER_NAME);
+        if (!loader.isFile()) {
+            loader = new File(ctx.getFilesDir(), LOADER_NAME);
+        }
+        String supPath = sup.getAbsolutePath();
+        String loaderPath = loader.getAbsolutePath();
+        String runName = SUP_BASE + versionCode(ctx) + ".sh";
         return ""
                 + "set +e\n"
                 + "mkdir -p " + RUN_DIR + " /data/dfroot/log /data/adb/service.d\n"
-                + "cp '" + sup + "' " + RUN_DIR + "/" + SUP_BASE + versionCode(ctx) + ".sh\n"
-                + "chmod 755 " + RUN_DIR + "/" + SUP_BASE + versionCode(ctx) + ".sh\n"
-                + "cmp -s '" + loader + "' /data/adb/service.d/dfroot-sup.sh 2>/dev/null"
-                + " || cp '" + loader + "' /data/adb/service.d/dfroot-sup.sh\n"
+                + "cp '" + supPath + "' " + RUN_DIR + "/" + runName + "\n"
+                + "chmod 755 " + RUN_DIR + "/" + runName + "\n"
+                + "cmp -s '" + loaderPath + "' /data/adb/service.d/dfroot-sup.sh 2>/dev/null"
+                + " || cp '" + loaderPath + "' /data/adb/service.d/dfroot-sup.sh\n"
                 + "chmod 755 /data/adb/service.d/dfroot-sup.sh 2>/dev/null\n"
                 + "rm -f /data/adb/service.d/dfroot-keep.sh\n"
                 + "if [ -f " + RUN_DIR + "/sup.pid ]; then\n"

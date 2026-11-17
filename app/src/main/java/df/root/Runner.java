@@ -204,15 +204,25 @@ final class Runner {
      * unbind and the cached knox.kg.state property. Both are idempotent.
      */
     private static void applyKgFix(Context ctx, IReporter reporter) {
-        reporter.report(KgBroadcast.apply(ctx));
         String hal = runKgtaHelper(ctx, "unlock");
         String unlock = runAndRead(30L, "su", "10085", "-c", KG_UNLOCK);
         if (unlock == null || unlock.trim().isEmpty()) {
             unlock = runAndRead(30L, "su", "--mount-master", "-c",
                     "/system/bin/su 10085 -c '" + KG_UNLOCK + "'");
         }
-        String ta = runAndRead(20L, "su", "-c", KG_STATE);
-        String prop = runAndRead(20L, "su", "-c", "getprop knox.kg.state");
+        // After the TA is unlocked, so the client state sees the new state.
+        reporter.report(KgBroadcast.apply(ctx));
+        String state = runAndRead(20L, "su", "-c",
+                KG_STATE + "; echo ---; getprop knox.kg.state");
+        String ta = state;
+        String prop = "";
+        if (state != null) {
+            int split = state.indexOf("---");
+            if (split >= 0) {
+                ta = state.substring(0, split);
+                prop = state.substring(split + 3);
+            }
+        }
         reporter.report("[kg] hal=" + oneLine(hal)
                 + " unlock=" + oneLine(unlock)
                 + " state=" + taState(ta)
@@ -227,18 +237,20 @@ final class Runner {
      */
     private static String runKgtaHelper(Context ctx, String action) {
         File helper = new File(ctx.getFilesDir(), "kgta_helper");
-        try (InputStream in = ctx.getAssets().open(KGTA_ASSET);
-             OutputStream out = new FileOutputStream(helper)) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) > 0) {
-                out.write(buffer, 0, read);
+        if (!helper.isFile() || helper.length() == 0) {
+            try (InputStream in = ctx.getAssets().open(KGTA_ASSET);
+                 OutputStream out = new FileOutputStream(helper)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                }
+            } catch (IOException e) {
+                return "helper-asset-error: " + e.getMessage();
             }
-        } catch (IOException e) {
-            return "helper-asset-error: " + e.getMessage();
+            helper.setReadable(true, false);
+            helper.setExecutable(true, false);
         }
-        helper.setReadable(true, false);
-        helper.setExecutable(true, false);
         return runAndRead(30L, "su", "-c", helper.getAbsolutePath() + " " + action);
     }
 

@@ -5,7 +5,11 @@ import android.content.Intent;
 import android.util.Log;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
 /**
  * App-domain Knox Guard nudges found in the decompiled kgclient receivers.
@@ -14,17 +18,26 @@ import java.io.InputStreamReader;
  * emits KNOXGUARD_UNLOCKED. KGKesReceiver handles START_KNOXGUARD and
  * KGIntentReceiver handles CUSTOMER_APP with an attacker-supplied package.
  *
- * START_KNOXGUARD is only sent while the device is NOT enrolled. x1.a.H()
- * in kgclient shows "Device has been enrolled. Can't enroll again." for
- * states Active(2), Locked(3) and Completed(4), so on an enrolled device
- * the nudge would only produce that toast. The HAL/Java unlock in Runner
- * is the primary path and runs regardless.
+ * Only MANUAL_UNLOCK runs by default. START_KNOXGUARD can open the browser
+ * enrollment UI on a device that is not enrolled yet, and CUSTOMER_APP
+ * replaces the customer-app slot in the KG policy; both stay disabled unless
+ * FULL_NUDGES is flipped for research. START is also skipped while
+ * knox.kg.state is Active/Locked/Completed, where x1.a.H() only shows
+ * "Device has been enrolled. Can't enroll again."
+ *
+ * The startup nudge runs once per boot: a per-boot marker in device-protected
+ * storage stops a process restart storm from emitting the broadcast again.
  */
 final class KgBroadcast {
 
     private static final String TAG = "dfroot";
     private static final String CLIENT = "com.samsung.android.kgclient";
     private static final String CUSTOMER_PACKAGE = "df.root";
+    private static final String BOOT_MARK = "kg-nudge-boot";
+
+    /** Research switch: also send START_KNOXGUARD and CUSTOMER_APP. */
+    private static final boolean FULL_NUDGES = false;
+
     private static final String START = "start";
 
     private static final String[][] NUDGES = {
@@ -51,20 +64,24 @@ final class KgBroadcast {
     private KgBroadcast() {
     }
 
-    /** Fire the app-domain nudges at startup, before root exists. */
+    /** Fire the app-domain nudges once per boot, before root exists. */
     static void appOnly(final Context ctx) {
         Thread t = new Thread(() -> {
-            int state = state();
+            if (alreadyNudged(ctx)) {
+                return;
+            }
+            int state = Probes.intProp("knox.kg.state", -1);
             Log.i(TAG, "[kg-broadcast] state=" + state
                     + (enrolled(state) ? " (already enrolled)" : ""));
             for (String[] nudge : NUDGES) {
-                if (START.equals(nudge[0]) && enrolled(state)) {
-                    Log.i(TAG, "[kg-broadcast] start skipped (already enrolled)");
+                if (!enabled(nudge[0], state)) {
+                    Log.i(TAG, "[kg-broadcast] " + nudge[0] + " skipped");
                     continue;
                 }
                 Log.i(TAG, "[kg-broadcast] " + nudge[0]
                         + " app=" + appNudge(ctx, nudge[1], nudge[3]));
             }
+            markNudged(ctx);
         }, "dfroot-kg");
         t.setDaemon(true);
         t.start();
@@ -72,14 +89,14 @@ final class KgBroadcast {
 
     /** Returns lines ready for the run log; never throws. */
     static String apply(Context ctx) {
-        int state = state();
+        int state = Probes.intProp("knox.kg.state", -1);
         StringBuilder out = new StringBuilder();
         out.append("[kg-broadcast] state=").append(state)
                 .append(enrolled(state) ? " (already enrolled)" : "").append('\n');
         for (String[] nudge : NUDGES) {
             String label = nudge[0];
-            if (START.equals(label) && enrolled(state)) {
-                out.append("[kg-broadcast] start skipped (already enrolled)\n");
+            if (!enabled(label, state)) {
+                out.append("[kg-broadcast] ").append(label).append(" skipped\n");
                 continue;
             }
             String action = nudge[1];
@@ -102,6 +119,19 @@ final class KgBroadcast {
         return out.toString();
     }
 
+    private static boolean enabled(String label, int state) {
+        if ("unlock".equals(label)) {
+            return true;
+        }
+        if (!FULL_NUDGES) {
+            return false;
+        }
+        if (START.equals(label) && enrolled(state)) {
+            return false;
+        }
+        return true;
+    }
+
     private static String appNudge(Context ctx, String action, String extra) {
         try {
             Intent intent = new Intent(action).setPackage(CLIENT);
@@ -121,44 +151,61 @@ final class KgBroadcast {
         return state == 2 || state == 3 || state == 4;
     }
 
-    /** Read knox.kg.state without hidden APIs, then fall back to root. */
-    private static int state() {
-        int value = parse(readProp());
-        if (value < 0) {
-            value = parse(oneLine(Runner.suScript(10L, "getprop knox.kg.state")));
-        }
-        return value;
-    }
-
-    private static String readProp() {
-        Process process = null;
+    private static boolean alreadyNudged(Context ctx) {
         try {
-            process = new ProcessBuilder("getprop", "knox.kg.state")
-                    .redirectErrorStream(true).start();
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()));
-            String line = reader.readLine();
-            reader.close();
-            process.waitFor();
-            return line;
-        } catch (Throwable t) {
-            return null;
-        } finally {
-            if (process != null) {
-                process.destroy();
+            File mark = bootMark(ctx);
+            if (!mark.isFile()) {
+                return false;
             }
+            return bootId().equals(readTrim(mark));
+        } catch (Throwable t) {
+            return false;
         }
     }
 
-    private static int parse(String value) {
-        if (value == null) {
-            return -1;
-        }
-        String flat = value.trim();
+    private static void markNudged(Context ctx) {
         try {
-            return Integer.parseInt(flat);
+            File mark = bootMark(ctx);
+            File parent = mark.getParentFile();
+            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+                return;
+            }
+            FileOutputStream out = new FileOutputStream(mark, false);
+            try {
+                out.write(bootId().getBytes(StandardCharsets.UTF_8));
+            } finally {
+                out.close();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static File bootMark(Context ctx) {
+        try {
+            return new File(ctx.createDeviceProtectedStorageContext().getFilesDir(), BOOT_MARK);
         } catch (Throwable t) {
-            return -1;
+            return new File(ctx.getFilesDir(), BOOT_MARK);
+        }
+    }
+
+    private static String bootId() {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream("/proc/sys/kernel/random/boot_id"),
+                StandardCharsets.UTF_8))) {
+            String line = reader.readLine();
+            return line == null ? "" : line.trim();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private static String readTrim(File file) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream(file), StandardCharsets.UTF_8))) {
+            String line = reader.readLine();
+            return line == null ? "" : line.trim();
+        } catch (Throwable t) {
+            return "";
         }
     }
 
