@@ -1,5 +1,6 @@
 package df.root;
 
+import android.app.Activity;
 import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -8,6 +9,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.Build;
@@ -20,24 +22,44 @@ import android.util.Log;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
- * Stays up for the whole boot. The process is held by a foreground service, a
- * repeating alarm, boot and unlock broadcasts, and a root loop that starts
- * this service again if the system kills it. Each tick runs the post-root scripts.
+ * Owns the keep-alive and the auto-root retries.
+ *
+ * BootReceiver and the alarm only enqueue chain passes here; the single
+ * dfroot-chain worker runs them inside the foreground service, so a pass is
+ * never frozen or killed mid-exploit the way a long-lived broadcast thread
+ * can be. The keep worker adapts its cadence: 30 s without root, 120 s with
+ * a healthy root side, 15 s while a pass is in flight, and it fires a chain
+ * pass the moment a live root is observed to be gone.
  */
 public class KeepService extends Service {
 
     private static final String TAG = "dfroot";
     private static final String CHANNEL = "dfroot-keep";
+    private static final String EXTRA_CHAIN = "dfroot.extra.CHAIN_ACTION";
     private static final int NOTIF_ID = 7;
-    private static final int ALARM_CODE = 1002;
-    private static final long TICK_MS = 60000;
-    private static final long ALARM_MS = 180000;
-    private static final long ROOT_KICK_MS = 180000;
+    private static final int KEEP_ALARM_CODE = 1002;
+    private static final int RETRY_ALARM_CODE = 1003;
+    private static final long KEEP_ALARM_MS = 180000L;
+    private static final long TICK_NO_ROOT_MS = 30000L;
+    private static final long TICK_ROOTED_MS = 120000L;
+    private static final long TICK_BUSY_MS = 15000L;
+    private static final long CHAIN_MIN_GAP_MS = 60000L;
+    private static final long RETRY_GRACE_MS = 30000L;
 
     private static final Object GATE = new Object();
+    private static final ExecutorService CHAIN = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "dfroot-chain");
+        t.setDaemon(true);
+        return t;
+    });
+
     private static volatile boolean running;
-    private static volatile long lastRootKick;
+    private static volatile boolean knownLive;
+    private static volatile long lastChainRequest;
     private static Thread worker;
 
     static void start(Context ctx) {
@@ -52,39 +74,110 @@ public class KeepService extends Service {
                 Log.w(TAG, "keep start: " + t2);
             }
         }
-        schedule(ctx);
+        scheduleKeep(ctx);
     }
 
-    static void requestExemptions(android.app.Activity activity) {
+    /** Enqueue one chain pass; serialized on the dfroot-chain worker. */
+    static void requestChain(Context ctx, String action) {
+        lastChainRequest = SystemClock.elapsedRealtime();
+        Intent i = new Intent(ctx, KeepService.class)
+                .putExtra(EXTRA_CHAIN, action == null ? "boot" : action);
         try {
-            if (ContextCompat.checkSelfPermission(activity, android.Manifest.permission.POST_NOTIFICATIONS)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(activity,
-                        new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+            ctx.startForegroundService(i);
+        } catch (Throwable t) {
+            try {
+                ctx.startService(i);
+            } catch (Throwable t2) {
+                Log.w(TAG, "chain start: " + t2);
+            }
+        }
+    }
+
+    /** The only retry alarm in the app. */
+    static void scheduleRetry(Context ctx, long delayMs) {
+        try {
+            AlarmManager am = (AlarmManager) ctx.getSystemService(ALARM_SERVICE);
+            if (am == null) {
+                return;
+            }
+            Intent i = new Intent(ctx, KeepReceiver.class).setAction(KeepReceiver.ACTION_CHAIN);
+            PendingIntent pi = PendingIntent.getBroadcast(ctx, RETRY_ALARM_CODE, i,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            long at = SystemClock.elapsedRealtime() + delayMs;
+            try {
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
+            } catch (Throwable exactDenied) {
+                am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    static void cancelRetry(Context ctx) {
         try {
+            AlarmManager am = (AlarmManager) ctx.getSystemService(ALARM_SERVICE);
+            Intent i = new Intent(ctx, KeepReceiver.class).setAction(KeepReceiver.ACTION_CHAIN);
+            PendingIntent pi = PendingIntent.getBroadcast(ctx, RETRY_ALARM_CODE, i,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            if (am != null) {
+                am.cancel(pi);
+            }
+            pi.cancel();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Ask for notification access and the battery exemption once per version. */
+    static void requestExemptions(Activity activity) {
+        try {
+            SharedPreferences sp = activity.getSharedPreferences("dfroot", MODE_PRIVATE);
+            int version = versionCode(activity);
+            if (sp.getInt("prompted_version", -1) >= version) {
+                return;
+            }
+            boolean notifGranted = ContextCompat.checkSelfPermission(activity,
+                    android.Manifest.permission.POST_NOTIFICATIONS)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
             PowerManager pm = (PowerManager) activity.getSystemService(POWER_SERVICE);
-            if (pm != null && !pm.isIgnoringBatteryOptimizations(activity.getPackageName())) {
+            boolean batteryOk = pm != null
+                    && pm.isIgnoringBatteryOptimizations(activity.getPackageName());
+            if (notifGranted && batteryOk) {
+                sp.edit().putInt("prompted_version", version).apply();
+                return;
+            }
+            if (!notifGranted) {
+                ActivityCompat.requestPermissions(activity,
+                        new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+            }
+            if (!batteryOk) {
                 Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
                 i.setData(Uri.parse("package:" + activity.getPackageName()));
                 activity.startActivity(i);
             }
+            sp.edit().putInt("prompted_version", version).apply();
         } catch (Throwable ignored) {
         }
     }
 
-    private static void schedule(Context ctx) {
+    private static int versionCode(Context ctx) {
+        try {
+            return ctx.getPackageManager()
+                    .getPackageInfo(ctx.getPackageName(), 0).versionCode;
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static void scheduleKeep(Context ctx) {
         try {
             AlarmManager am = (AlarmManager) ctx.getSystemService(ALARM_SERVICE);
             if (am == null) {
                 return;
             }
             Intent i = new Intent(ctx, KeepReceiver.class).setAction(KeepReceiver.ACTION);
-            PendingIntent pi = PendingIntent.getBroadcast(ctx, ALARM_CODE, i,
+            PendingIntent pi = PendingIntent.getBroadcast(ctx, KEEP_ALARM_CODE, i,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-            long at = SystemClock.elapsedRealtime() + ALARM_MS;
+            long at = SystemClock.elapsedRealtime() + KEEP_ALARM_MS;
             try {
                 am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
             } catch (Throwable exactDenied) {
@@ -104,7 +197,19 @@ public class KeepService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         promote();
-        schedule(this);
+        scheduleKeep(this);
+        String chain = intent == null ? null : intent.getStringExtra(EXTRA_CHAIN);
+        if (chain != null) {
+            final String action = chain;
+            final Context app = this;
+            CHAIN.execute(() -> {
+                try {
+                    BootChain.pass(app, action);
+                } catch (Throwable t) {
+                    Log.w(TAG, "chain: " + t);
+                }
+            });
+        }
         ensureWorker();
         poke();
         return START_STICKY;
@@ -112,7 +217,7 @@ public class KeepService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        schedule(this);
+        scheduleKeep(this);
         start(this);
         super.onTaskRemoved(rootIntent);
     }
@@ -121,7 +226,7 @@ public class KeepService extends Service {
     public void onDestroy() {
         running = false;
         poke();
-        schedule(this);
+        scheduleKeep(this);
         try {
             unregisterReceiver(pokeReceiver);
         } catch (Throwable ignored) {
@@ -185,20 +290,34 @@ public class KeepService extends Service {
         running = true;
         worker = new Thread(() -> {
             while (running) {
+                long delay;
                 try {
-                    if (!RootProbe.probe().live && BootReceiver.isAutoEnabled(this)
-                            && SystemClock.elapsedRealtime() - lastRootKick > ROOT_KICK_MS) {
-                        lastRootKick = SystemClock.elapsedRealtime();
-                        sendBroadcast(new Intent(this, BootReceiver.class)
-                                .setAction(BootReceiver.ACTION_BOOT_RETRY));
+                    if (Runner.isClaimed()) {
+                        delay = TICK_BUSY_MS;
+                    } else {
+                        int status = PostRoot.tick(this);
+                        if (status == PostRoot.DEAD) {
+                            if (knownLive) {
+                                knownLive = false;
+                                BootChain.noteRootLost();
+                                Log.i(TAG, "keep: root dropped, requesting chain");
+                                requestChain(this, "su-drop");
+                            } else if (BootReceiver.isAutoEnabled(this) && chainIdle()) {
+                                requestChain(this, "tick");
+                            }
+                            delay = TICK_NO_ROOT_MS;
+                        } else {
+                            knownLive = true;
+                            delay = status == PostRoot.BUSY ? TICK_BUSY_MS : TICK_ROOTED_MS;
+                        }
                     }
-                    PostRoot.tick(this);
                 } catch (Throwable t) {
                     Log.w(TAG, "keep tick: " + t);
+                    delay = TICK_NO_ROOT_MS;
                 }
                 synchronized (GATE) {
                     try {
-                        GATE.wait(TICK_MS);
+                        GATE.wait(delay);
                     } catch (InterruptedException ignored) {
                         return;
                     }
@@ -207,6 +326,15 @@ public class KeepService extends Service {
         }, "dfroot-keep");
         worker.setDaemon(false);
         worker.start();
+    }
+
+    private static boolean chainIdle() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastChainRequest < CHAIN_MIN_GAP_MS) {
+            return false;
+        }
+        long next = BootChain.nextRetryAt;
+        return next == 0L || now > next + RETRY_GRACE_MS;
     }
 
     private static void poke() {

@@ -16,5 +16,14 @@ public class RootApp extends Application {
         DynamicColors.applyToActivitiesIfAvailable(this);
         KgBroadcast.appOnly(this);
         KeepService.start(this);
+        Thread prep = new Thread(() -> {
+            try {
+                AssetPrep.prepareIfNeeded(this);
+            } catch (Throwable t) {
+                android.util.Log.w("dfroot", "asset prep: " + t);
+            }
+        }, "dfroot-prep");
+        prep.setDaemon(true);
+        prep.start();
     }
 }

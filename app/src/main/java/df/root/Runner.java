@@ -105,8 +105,13 @@ final class Runner {
                     .setIpv4Encapsulation(encapSock, senderPort)
                     .buildTransportModeTransform(loopback, spiObj);
 
-            stageAsset(ctx, "ksud", true, ctx.getFilesDir());
+            if (!AssetPrep.isStaged(ctx)) {
+                stageAsset(ctx, "ksud", true, ctx.getFilesDir());
+            }
             File ksud = new File(ctx.getFilesDir(), "ksud");
+            if (!ksud.isFile() || ksud.length() == 0) {
+                stageAsset(ctx, "ksud", true, ctx.getFilesDir());
+            }
             reporter.report("ksud staged to: " + ksud.getAbsolutePath()
                     + " (" + ksud.length() + " bytes)\n");
             reporter.report("\n=== exploit ===\n");

@@ -83,6 +83,7 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="df.root.action.KEEP" />
+                <action android:name="df.root.action.CHAIN_RETRY" />
             </intent-filter>
         </receiver>
 

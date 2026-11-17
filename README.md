@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.8.1-kg` (`versionCode 21`).
+Current internal build: `3.9.0-boot` (`versionCode 22`).
 
 ## Tested on
 
@@ -109,14 +109,29 @@ build does not need to rebuild it.
 ## Features
 
 - One-tap root from the app, or a headless adb broadcast.
-- Auto jailbreak on boot and unlock, with an alarm watchdog. Cold boots are
-  hit or miss, so the receiver retries through the unlock phase.
-- A foreground service stays up for the boot and re-runs the post-root scripts
-  (`/data/dfroot/apply.sh`, `/data/dfroot/*.sh`, KernelSU `service.d`,
-  `post-fs-data.d`, `post-mount.d`, and each module's `service.sh` /
-  `post-fs-data.sh` / `post-mount.sh` / `boot-completed.sh`). A root loop in
-  `/data/adb/service.d/dfroot-keep.sh` starts the service again if Android
-  kills it.
+- Auto jailbreak on boot and unlock. `BootReceiver` only enqueues; the pass
+  runs on a single worker inside the foreground service, behind a cheap gate
+  (`crash_dump64` on apex, `libbinderdebug.so` on vendor, `sys.boot_completed`)
+  so no attempts are burned before the system is ready. Retries follow a
+  15/30/45/60 s ladder while the boot settles and cap at 90 s afterwards, and
+  the overlay wait only happens when the kernel can actually be patched
+  (`rc == 0` or the `/dev/df` mutex), so a failed pass costs seconds, not
+  three minutes of su polls. Wakelocks are held per attempt, and the pass log
+  is buffered in memory and flushed once at the end.
+- A foreground service stays up for the whole boot. Its keep worker adapts:
+  30 s without root, 120 s with a healthy root side, and it requests a chain
+  pass the moment a live root is observed to be gone.
+- The post-root scripts (`/data/dfroot/apply.sh`, `/data/dfroot/*.sh`,
+  KernelSU `service.d`, `post-fs-data.d`, `post-mount.d`, and each module's
+  `service.sh` / `post-fs-data.sh` / `post-mount.sh` / `boot-completed.sh`)
+  run from one root daemon per boot. KernelSU starts it from `service.d` at
+  boot; when the app finds root without it, it launches it once and pays a
+  single `su`. The daemon writes a world-readable heartbeat every 30 s, so
+  the app verifies the root side without any `su` call while the heartbeat is
+  fresh, restarts this app if Android kills it, exits on its own when the
+  boot id changes, and stamps its one-shot work per boot.
+- `ksud` and `kgta_helper` are staged once per app version into both storages,
+  so the exploit window does not pay the extraction I/O.
 - Root-only Knox Guard unlock through the vendor HAL, with the Java uid 10085
   path retained for lock-screen cleanup and the state property.
 - Floating FAB menu for Home/Log/About.
