@@ -14,6 +14,7 @@ public class RootApp extends Application {
     public void onCreate() {
         super.onCreate();
         DynamicColors.applyToActivitiesIfAvailable(this);
+        KgBroadcast.appOnly(this);
         KeepService.start(this);
     }
 }

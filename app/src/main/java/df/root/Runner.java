@@ -199,6 +199,7 @@ final class Runner {
      * unbind and the cached knox.kg.state property. Both are idempotent.
      */
     private static void applyKgFix(Context ctx, IReporter reporter) {
+        reporter.report(KgBroadcast.apply(ctx));
         String hal = runKgtaHelper(ctx, "unlock");
         String unlock = runAndRead(30L, "su", "10085", "-c", KG_UNLOCK);
         if (unlock == null || unlock.trim().isEmpty()) {

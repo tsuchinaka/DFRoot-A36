@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.7.0-ui` (`versionCode 19`).
+Current internal build: `3.8.0-kg` (`versionCode 20`).
 
 ## Tested on
 
@@ -73,6 +73,14 @@ system, because the TA state (not the `knox.kg.state` property) is what matters.
 - On a device without the Samsung KG HAL, the helper fails cleanly and the
   Java path is used. The HAL path is root-only; a normal app cannot reach the
   vendor service.
+- A third, app-domain path is sent first: the decompiled `kgclient` receivers
+  `ServiceIntentReceiver` (MANUAL_UNLOCK), `KGKesReceiver` (START_KNOXGUARD)
+  and `KGIntentReceiver` (CUSTOMER_APP) have no caller check in their code.
+  `KgBroadcast` sends those intents from the app at startup and again through
+  root after the chain, restricted to `com.samsung.android.kgclient`. Whether
+  they are actually reachable depends on the receiver's `exported` flag and
+  manifest permission, which cannot be confirmed without the device; every
+  result is logged to `run.log` as `[kg-broadcast]`.
 
 The helper can be rebuilt with:
 
