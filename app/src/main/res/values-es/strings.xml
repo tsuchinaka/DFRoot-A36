@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DFRoot</string>
+    <string name="tab_home">Inicio</string>
+    <string name="tab_log">Registro</string>
+    <string name="tab_about">Acerca de</string>
+    <string name="menu_open">Abrir menú</string>
+    <string name="menu_close">Cerrar menú</string>
+
+    <string name="home_big_checking">…</string>
+    <string name="home_big_live">ACTIVO</string>
+    <string name="home_big_idle">INACTIVO</string>
+    <string name="home_big_installed">root instalado, KernelSU no responde a esta app</string>
+    <string name="home_big_unsupported">NO COMPATIBLE</string>
+    <string name="home_auto_note">Rootea al arrancar y al desbloquear. Reintenta si falla.</string>
+
+    <string name="stat_kernel">Kernel</string>
+    <string name="stat_device">Dispositivo</string>
+    <string name="stat_su">su</string>
+    <string name="stat_manager">KernelSU</string>
+
+    <string name="about_build">Versión %1$s</string>
+    <string name="about_summary">Root temporal para el Galaxy A36 (SM-A366E). El chain está acreditado abajo.</string>
+    <string name="about_repo">Repositorio</string>
+    <string name="about_releases">Versiones</string>
+    <string name="about_disclaimer">Proyecto de investigación independiente. Rootear puede brickea el equipo o activar funciones de seguridad; usalo solo en tu dispositivo y bajo tu responsabilidad.</string>
+
+    <string name="root_checking">comprobando…</string>
+    <string name="root_live">ACTIVO</string>
+    <string name="root_inactive">no activo</string>
+    <string name="su_ok">uid=0</string>
+    <string name="manager_absent">no instalado</string>
+
+    <string name="action_jailbreak">Jailbreak</string>
+    <string name="action_jailbreak_again">Ejecutar de nuevo</string>
+    <string name="action_running">Ejecutando…</string>
+    <string name="action_auto_root">Auto-root al arrancar</string>
+    <string name="already_running">Ya hay una ejecución en curso.</string>
+    <string name="log_placeholder">Pulsá Jailbreak para empezar.</string>
+    <string name="log_count">%1$d líneas</string>
+    <string name="log_copy">Copiar</string>
+    <string name="log_export">Exportar</string>
+    <string name="log_export_failed">No se pudo exportar el registro.</string>
+    <string name="log_copied">Registro copiado</string>
+    <string name="log_clear">Limpiar</string>
+    <string name="log_clear_confirm">¿Borrar el registro de ejecución? boot.log se conserva para la próxima pasada.</string>
+    <string name="log_clear_yes">Borrar</string>
+    <string name="log_cancel">Cancelar</string>
+    <string name="log_search">Buscar</string>
+    <string name="log_no_match">Sin líneas coincidentes.</string>
+    <string name="log_follow_on">Siguiendo</string>
+    <string name="log_follow_off">Pausado</string>
+    <string name="log_diag">Diagnóstico</string>
+    <string name="log_cleared">Registro limpio</string>
+    <string name="auto_enabled">Auto-root al arrancar: activado</string>
+    <string name="auto_disabled">Auto-root al arrancar: desactivado</string>
+
+    <string name="grant_hint">Esta app no está en la lista de KernelSU, así que su se rechaza y el root no se puede verificar desde acá. Abrí KernelSU Manager, agregá DFRoot a la lista de superusuarios y volvé a esta pantalla.</string>
+    <string name="waiting_for_install">ksud termina de instalar KernelSU después del chain; esperando que su responda…</string>
+    <string name="still_installing">…instalando (%1$ds)</string>
+
+    <string name="result_success">Root activo: su ahora resuelve a KernelSU.</string>
+    <string name="result_installed_not_granted">Root instalado, pero su está rechazado para esta app; agregá DFRoot en KernelSU Manager para verificarlo.</string>
+    <string name="result_ksud_failed">ksud terminó con error.</string>
+    <string name="result_watchdog">El chain corrió pero no se vio el marcador de éxito; su puede aparecer igual.</string>
+    <string name="result_module_failed">El módulo dirtyfrag no cargó (¿KMI incompatible?).</string>
+    <string name="result_mount_failed">El shell root falló en la etapa de mount namespace.</string>
+    <string name="result_staging_failed">No se pudo copiar ksud al dispositivo.</string>
+    <string name="result_patch_failed">Falló el parcheo de archivos.</string>
+    <string name="result_exception">El exploit lanzó: %1$s</string>
+    <string name="target_unsupported">Esta build es solo para el Galaxy A36 5G (a36xq, kernel 6.6 android15).</string>
+
+    <string name="last_pass">Última pasada</string>
+    <string name="kg_row">Desbloqueo de Knox Guard</string>
+    <string name="kg_enabled">Desbloqueo de Knox Guard: activado</string>
+    <string name="kg_disabled">Desbloqueo de Knox Guard: desactivado</string>
+    <string name="kg_state_prenormal">Prenormal</string>
+    <string name="kg_state_checking">Comprobando</string>
+    <string name="kg_state_active">Activo</string>
+    <string name="kg_state_locked">Bloqueado</string>
+    <string name="kg_state_completed">Completado</string>
+    <string name="kg_state_error">Error</string>
+    <string name="kg_state_unknown">Desconocido</string>
+</resources>

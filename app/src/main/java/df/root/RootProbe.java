@@ -45,10 +45,14 @@ final class RootProbe {
     }
 
     static Result probe() {
+        return probe(TIMEOUT_SECONDS);
+    }
+
+    static Result probe(long timeoutSeconds) {
         java.lang.Process process = null;
         try {
             process = new ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start();
-            if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 Log.d(TAG, "su probe: timeout");
                 process.destroyForcibly();
                 return new Result(false, "timeout");

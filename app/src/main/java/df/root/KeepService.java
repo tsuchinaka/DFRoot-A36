@@ -132,34 +132,42 @@ public class KeepService extends Service {
         }
     }
 
-    /** Ask for notification access and the battery exemption once per version. */
+    /** Notification access prompt, once per version. Battery is asked from
+     * the auto-root switch instead of on every launch. */
     static void requestExemptions(Activity activity) {
         try {
             SharedPreferences sp = activity.getSharedPreferences("dfroot", MODE_PRIVATE);
             int version = versionCode(activity);
-            if (sp.getInt("prompted_version", -1) >= version) {
+            if (sp.getInt("notif_prompted_version", -1) >= version) {
                 return;
             }
-            boolean notifGranted = ContextCompat.checkSelfPermission(activity,
+            if (ContextCompat.checkSelfPermission(activity,
                     android.Manifest.permission.POST_NOTIFICATIONS)
-                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
-            PowerManager pm = (PowerManager) activity.getSystemService(POWER_SERVICE);
-            boolean batteryOk = pm != null
-                    && pm.isIgnoringBatteryOptimizations(activity.getPackageName());
-            if (notifGranted && batteryOk) {
-                sp.edit().putInt("prompted_version", version).apply();
-                return;
-            }
-            if (!notifGranted) {
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(activity,
                         new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
             }
-            if (!batteryOk) {
-                Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                i.setData(Uri.parse("package:" + activity.getPackageName()));
-                activity.startActivity(i);
+            sp.edit().putInt("notif_prompted_version", version).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static void requestBatteryExemption(Context ctx) {
+        try {
+            PowerManager pm = (PowerManager) ctx.getSystemService(POWER_SERVICE);
+            if (pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName())) {
+                return;
             }
-            sp.edit().putInt("prompted_version", version).apply();
+            SharedPreferences sp = ctx.getSharedPreferences("dfroot", MODE_PRIVATE);
+            int version = versionCode(ctx);
+            if (sp.getInt("battery_prompted_version", -1) >= version) {
+                return;
+            }
+            sp.edit().putInt("battery_prompted_version", version).apply();
+            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            i.setData(Uri.parse("package:" + ctx.getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
         } catch (Throwable ignored) {
         }
     }

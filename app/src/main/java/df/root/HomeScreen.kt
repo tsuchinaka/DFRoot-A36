@@ -24,6 +24,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -32,8 +36,11 @@ fun HomeScreen(
     state: DfrootState,
     onRun: () -> Unit,
     onAutoEnabledChange: (Boolean) -> Unit,
+    onKgEnabledChange: (Boolean) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val autoLabel = stringResource(R.string.action_auto_root)
+    val kgLabel = stringResource(R.string.kg_row)
     val status = when {
         !state.targetOk -> stringResource(R.string.home_big_unsupported)
         !state.suProbed -> stringResource(R.string.home_big_checking)
@@ -65,6 +72,7 @@ fun HomeScreen(
             text = status,
             style = MaterialTheme.typography.headlineLarge,
             color = statusColor,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
         )
         Spacer(Modifier.height(6.dp))
         Text(
@@ -122,11 +130,17 @@ fun HomeScreen(
                 Fact(
                     stringResource(R.string.stat_manager),
                     if (state.managerInstalled) {
-                        state.managerVersion.ifEmpty { stringResource(R.string.root_live) }
+                        listOf(state.managerName, state.managerVersion)
+                            .filter { it.isNotEmpty() }
+                            .joinToString(" ")
+                            .ifEmpty { stringResource(R.string.root_live) }
                     } else {
                         stringResource(R.string.manager_absent)
                     },
                 )
+                if (state.lastPass.isNotEmpty()) {
+                    Fact(stringResource(R.string.last_pass), state.lastPass)
+                }
                 ListItem(
                     headlineContent = { Text(stringResource(R.string.action_auto_root)) },
                     supportingContent = {
@@ -136,6 +150,21 @@ fun HomeScreen(
                         Switch(
                             checked = state.autoEnabled,
                             onCheckedChange = onAutoEnabledChange,
+                            modifier = Modifier.semantics { contentDescription = autoLabel },
+                        )
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                )
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.kg_row)) },
+                    supportingContent = {
+                        Text(kgStateLabel(state.kgState))
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = state.kgEnabled,
+                            onCheckedChange = onKgEnabledChange,
+                            modifier = Modifier.semantics { contentDescription = kgLabel },
                         )
                     },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
@@ -160,6 +189,19 @@ private fun Fact(label: String, value: String) {
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
     )
 }
+
+@Composable
+private fun kgStateLabel(state: Int): String = stringResource(
+    when (state) {
+        0 -> R.string.kg_state_prenormal
+        1 -> R.string.kg_state_checking
+        2 -> R.string.kg_state_active
+        3 -> R.string.kg_state_locked
+        4 -> R.string.kg_state_completed
+        5 -> R.string.kg_state_error
+        else -> R.string.kg_state_unknown
+    },
+)
 
 private fun compactKernel(version: String): String {
     if (version.isEmpty()) return version

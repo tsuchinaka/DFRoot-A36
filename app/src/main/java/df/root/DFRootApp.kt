@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleFloatingActionButton
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -43,6 +44,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 
@@ -63,7 +67,22 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
         vm.consumeSnackbar()
     }
 
-    BackHandler(fabMenuExpanded) { fabMenuExpanded = false }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> vm.setForeground(true)
+                Lifecycle.Event.ON_STOP -> vm.setForeground(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    BackHandler(enabled = fabMenuExpanded || tab != 0) {
+        if (fabMenuExpanded) fabMenuExpanded = false else tab = 0
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -88,9 +107,16 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         state = state,
                         onRun = vm::runChain,
                         onAutoEnabledChange = vm::setAutoEnabled,
+                        onKgEnabledChange = vm::setKgEnabled,
                     )
 
-                    Tab.Log -> LogScreen(log = state.log, onExport = vm::exportLog)
+                    Tab.Log -> LogScreen(
+                        log = state.log,
+                        onCopy = vm::copyLog,
+                        onClear = vm::clearLog,
+                        onExport = vm::exportLog,
+                        onDiagnostics = vm::exportDiagnostics,
+                    )
                     Tab.About -> AboutScreen()
                 }
             }
