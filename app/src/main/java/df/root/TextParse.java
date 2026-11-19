@@ -32,4 +32,44 @@ final class TextParse {
     static boolean enrolled(int state) {
         return state == 2 || state == 3 || state == 4;
     }
+
+    /**
+     * The service writes the state NAME ("Active", "Locked", ...) into
+     * knox.kg.state, not a number. Accept both shapes: older mirrors and log
+     * snippets may carry the integer.
+     */
+    static int kgState(String value) {
+        if (value == null) {
+            return -1;
+        }
+        String v = value.trim();
+        if (v.isEmpty()) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(v);
+        } catch (Throwable ignored) {
+        }
+        switch (v.toLowerCase(java.util.Locale.US)) {
+            case "prenormal": return 0;
+            case "checking": return 1;
+            case "active": return 2;
+            case "locked": return 3;
+            case "completed": return 4;
+            case "error": return 5;
+            default: return -1;
+        }
+    }
+
+    static String kgStateName(int state) {
+        switch (state) {
+            case 0: return "Prenormal";
+            case 1: return "Checking";
+            case 2: return "Active";
+            case 3: return "Locked";
+            case 4: return "Completed";
+            case 5: return "Error";
+            default: return "Unknown";
+        }
+    }
 }

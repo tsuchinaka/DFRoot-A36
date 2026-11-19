@@ -30,7 +30,7 @@ final class Diagnostics {
         TargetGuard.Result target = TargetGuard.check(ctx);
         out.append("target: ok=").append(target.ok).append(' ').append(target.detail).append('\n');
         out.append("kg_enabled: ").append(KgWatchdog.enabled(ctx)).append('\n');
-        out.append("kg_state: ").append(Probes.intProp("knox.kg.state", -1)).append('\n');
+        out.append("kg_state: ").append(TextParse.kgStateName(TextParse.kgState(Probes.prop("knox.kg.state")))).append(" raw=").append(Probes.prop("knox.kg.state")).append('\n');
         out.append("boot_completed: ").append(Probes.prop("sys.boot_completed")).append('\n');
         out.append("rooted_this_boot: ").append(RootRecord.rootedThisBoot(ctx)).append('\n');
         RootProbe.Result probe = RootProbe.probe();

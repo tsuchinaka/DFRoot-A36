@@ -10,7 +10,7 @@ the A36 port, the Compose UI and the persistence/service code added here.
   `--ro-partitions` and `--soft-reboot`). KernelSU is GPL-2.0; see
   https://github.com/tiann/KernelSU. Rebuild provenance is not in this repo;
   pin the hash if you redistribute it.
-- `app/src/main/assets/kgta_helper` sha256 `738735c46e8427491a7df2d85a7c7429a725f4e499f4c10dd5121781b2294aff`
+- `app/src/main/assets/kgta_helper` sha256 `65d290b865674eab4fb556a2cfeaeb8f6b8811b47d6a49d94800137a90d92201`
   Built from `tools/kgta_helper.c` in this repo.
 
 ## Kernel module images

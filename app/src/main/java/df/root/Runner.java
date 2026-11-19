@@ -218,62 +218,117 @@ final class Runner {
      * service: 29 = getKgState, 35 = unlockScreen. A firmware change shows up
      * as an odd parcel and the raw output stays in the log.
      */
-    static void applyKgOnly(Context ctx, IReporter reporter) {
-        applyKgFix(ctx, reporter);
-    }
-
-    private static void applyKgFix(Context ctx, IReporter reporter) {
-        if (!KgWatchdog.enabled(ctx)) {
-            reporter.report("[kg] disabled by preference\n");
-            return;
-        }
-        String hal = runKgtaHelper(ctx, "unlock");
-        int halState = parseHalState(hal);
-        String unlock = runAndRead(30L, "su", "10085", "-c", KG_UNLOCK);
-        if (unlock == null || unlock.trim().isEmpty()) {
-            unlock = runAndRead(30L, "su", "--mount-master", "-c",
-                    "/system/bin/su 10085 -c '" + KG_UNLOCK + "'");
-        }
-        // After the TA is unlocked, so the client state sees the new state.
-        reporter.report(KgBroadcast.apply(ctx));
-        String ta = null;
-        if (halState < 0) {
-            // The helper already printed the TA state; only pay the extra su
-            // when it did not run.
-            ta = runAndRead(20L, "su", "-c", KG_STATE);
-        }
-        String prop = Probes.prop("knox.kg.state");
-        int state = halState >= 0 ? halState : TextParse.taState(ta);
-        reporter.report("[kg] hal=" + oneLine(hal)
-                + " unlock=" + oneLine(unlock)
-                + " state=" + state
-                + " prop=" + (prop.isEmpty() ? "?" : prop) + "\n");
-    }
-
-    private static int parseHalState(String out) {
-        if (out == null) {
-            return -1;
-        }
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("state=(-?\\d+)").matcher(out);
-        if (!m.find()) {
-            return -1;
-        }
-        try {
-            return Integer.parseInt(m.group(1));
-        } catch (Throwable t) {
-            return -1;
-        }
+    static final class KgResult {
+        int pre = -1;
+        int post = -1;
+        int unlock = -1;
+        int unlockErr = 0;
+        boolean skipped;
+        boolean serviceOk;
+        boolean broadcast;
+        String raw = "";
     }
 
     /**
-     * Extract the arm64 helper from assets and run it as root. The helper
-     * dlopens /system/lib64/aidl_comm_kg_client.so and calls the vendor KG
-     * HAL (TZ_KGTA_getKgState / TZ_KGTA_unlockScreen). It returns state/err
-     * and, for "unlock", unlock/err.
+     * State-first unlock. The helper reports pre state, only unlocks in
+     * Active(2)/Locked(3), and reports post state; the shell gates the
+     * service call on that pre state so a Prenormal/Checking device never
+     * reaches the TA. The service call runs as the kgclient uid (resolved,
+     * not hardcoded) for the lockscreen unbind and the property mirror.
+     * MANUAL_UNLOCK is a client-side cleanup and is sent only after the TA
+     * reports a real unlock.
      */
-    private static String runKgtaHelper(Context ctx, String action) {
-        File helper = new File(ctx.getFilesDir(), "kgta_helper");
+    static KgResult applyKgOnly(Context ctx, IReporter reporter) {
+        return applyKgFix(ctx, reporter);
+    }
+
+    private static KgResult applyKgFix(Context ctx, IReporter reporter) {
+        KgResult res = new KgResult();
+        if (!KgWatchdog.enabled(ctx)) {
+            reporter.report("[kg] disabled by preference\n");
+            return res;
+        }
+        int uid = kgUid(ctx);
+        String out = runKgScript(ctx, uid);
+        if (out == null) {
+            reporter.report("[kg] su did not answer\n");
+            res.unlockErr = -1006;
+            return res;
+        }
+        res.raw = out;
+        parseHal(out, res);
+        int before = res.pre >= 0 ? res.pre
+                : TextParse.kgState(Probes.prop("knox.kg.state"));
+        res.pre = before;
+        if (before == 0 || before == 1 || before == 5) {
+            res.post = before;
+            reporter.report("[kg] state=" + TextParse.kgStateName(before)
+                    + ", not unlockable; skipped\n");
+            return res;
+        }
+        boolean serviceOk = serviceSucceeded(out);
+        String prop = section(out, "@@PROP@@");
+        int state = res.post >= 0 ? res.post : TextParse.kgState(prop);
+
+        // Nested `su <uid>` is not guaranteed on every su build; if the
+        // service section failed, retry it the way the old flow did.
+        if (!serviceOk && before >= 2 && before <= 4) {
+            String fallback = runAndRead(30L, "su", String.valueOf(uid), "-c", KG_UNLOCK);
+            if (fallback != null && fallback.contains("Result:")) {
+                serviceOk = true;
+            }
+            prop = Probes.prop("knox.kg.state");
+            int fromProp = TextParse.kgState(prop);
+            if (fromProp >= 0) {
+                state = fromProp;
+            }
+        }
+
+        if ((state == 2 || state == 3) && res.unlockErr == 0) {
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            String retry = runKgScript(ctx, uid);
+            if (retry != null) {
+                res.raw = retry;
+                parseHal(retry, res);
+                serviceOk = serviceSucceeded(retry);
+                prop = section(retry, "@@PROP@@");
+                state = res.post >= 0 ? res.post : TextParse.kgState(prop);
+            }
+        }
+        res.post = state;
+        res.serviceOk = serviceOk;
+
+        boolean real = state == 4 || (state >= 0 && state != 2 && state != 3);
+        if (real && (res.unlockErr == 0 || res.skipped)) {
+            reporter.report(KgBroadcast.apply(ctx));
+            res.broadcast = true;
+        } else {
+            reporter.report("[kg-broadcast] skipped (no confirmed unlock)\n");
+        }
+        reporter.report("[kg] pre=" + TextParse.kgStateName(res.pre)
+                + " unlock=" + res.unlock
+                + " err=" + kgError(res.unlockErr)
+                + " post=" + TextParse.kgStateName(state)
+                + " prop=" + (prop == null || prop.trim().isEmpty() ? "?" : prop.trim())
+                + " service=" + (serviceOk ? "ok" : "fail") + "\n");
+        return res;
+    }
+
+    private static int kgUid(Context ctx) {
+        try {
+            return ctx.getPackageManager()
+                    .getPackageUid("com.samsung.android.kgclient", 0);
+        } catch (Throwable t) {
+            return 10085;
+        }
+    }
+
+    private static String runKgScript(Context ctx, int uid) {
+        File helper = new File(ctx.getFilesDir(), KGTA_ASSET);
         if (!helper.isFile() || helper.length() == 0) {
             try (InputStream in = ctx.getAssets().open(KGTA_ASSET);
                  OutputStream out = new FileOutputStream(helper)) {
@@ -283,12 +338,82 @@ final class Runner {
                     out.write(buffer, 0, read);
                 }
             } catch (IOException e) {
-                return "helper-asset-error: " + e.getMessage();
+                return null;
             }
             helper.setReadable(true, false);
             helper.setExecutable(true, false);
         }
-        return runAndRead(30L, "su", "-c", helper.getAbsolutePath() + " " + action);
+        String script = ""
+                + "set +e\n"
+                + "HELPER='" + helper.getAbsolutePath() + "'\n"
+                + "OUT=$($HELPER unlock)\n"
+                + "echo \"$OUT\"\n"
+                + "PRE=$(echo \"$OUT\" | sed -n 's/^pre_state=\\(-*[0-9][0-9]*\\).*/\\1/p')\n"
+                + "case \"$PRE\" in\n"
+                + "  2|3|4)\n"
+                + "    echo @@SERVICE@@\n"
+                + "    /system/bin/su " + uid + " -c 'service call knoxguard_service 35' 2>&1\n"
+                + "    ;;\n"
+                + "  *)\n"
+                + "    echo @@SERVICE@@\n"
+                + "    echo skipped\n"
+                + "    ;;\n"
+                + "esac\n"
+                + "echo @@PROP@@\n"
+                + "getprop knox.kg.state\n";
+        return Runner.suScript(90L, script);
+    }
+
+    private static void parseHal(String out, KgResult res) {
+        int pre = intKey(out, "pre_state", res.pre);
+        int unlock = intKey(out, "unlock", res.unlock);
+        int err = intKey(out, "unlock_err", res.unlockErr);
+        int post = intKey(out, "post_state", res.post);
+        if (pre >= 0) res.pre = pre;
+        res.unlock = unlock;
+        res.unlockErr = err;
+        if (post >= 0) res.post = post;
+        res.skipped = out.contains("skipped=1");
+    }
+
+    private static int intKey(String text, String key, int fallback) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile(key + "=(-?\\d+)").matcher(text);
+        return m.find() ? Integer.parseInt(m.group(1)) : fallback;
+    }
+
+    private static String section(String text, String marker) {
+        int at = text.indexOf(marker);
+        if (at < 0) {
+            return "";
+        }
+        return text.substring(at + marker.length());
+    }
+
+    private static boolean serviceSucceeded(String out) {
+        String service = section(out, "@@SERVICE@@");
+        int prop = service.indexOf("@@PROP@@");
+        if (prop >= 0) {
+            service = service.substring(0, prop);
+        }
+        if (service.contains("skipped")) {
+            return false;
+        }
+        if (service.contains("Exception") || service.contains("Error")) {
+            return false;
+        }
+        return service.contains("Result:");
+    }
+
+    private static String kgError(int err) {
+        switch (err) {
+            case 0: return "ok";
+            case -1: return "not-attempted";
+            case 513: return "RPMB unavailable (513)";
+            case 519: return "RPMB HMAC mismatch (519)";
+            case -1006: return "TA init failed (-1006)";
+            default: return String.valueOf(err);
+        }
     }
 
     private static String oneLine(String value) {

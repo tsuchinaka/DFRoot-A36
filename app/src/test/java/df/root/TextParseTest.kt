@@ -21,6 +21,19 @@ class TextParseTest {
     }
 
     @Test
+    fun kgStateAcceptsNamesAndNumbers() {
+        assertEquals(2, TextParse.kgState("Active"))
+        assertEquals(3, TextParse.kgState("locked"))
+        assertEquals(4, TextParse.kgState("Completed"))
+        assertEquals(0, TextParse.kgState("Prenormal"))
+        assertEquals(5, TextParse.kgState("Error"))
+        assertEquals(2, TextParse.kgState("2"))
+        assertEquals(-1, TextParse.kgState("nonsense"))
+        assertEquals(-1, TextParse.kgState(null))
+        assertEquals("Locked", TextParse.kgStateName(3))
+    }
+
+    @Test
     fun enrolledCoversActiveLockedCompleted() {
         assertTrue(TextParse.enrolled(2))
         assertTrue(TextParse.enrolled(3))

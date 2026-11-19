@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.10.1-ci` (`versionCode 28`).
+Current internal build: `4.0.0-kg` (`versionCode 29`).
 
 ## Tested on
 
@@ -56,33 +56,31 @@ The pieces are:
 
 ## Knox Guard handling
 
-The app does not bypass the TA. After root it uses the same unlock path as the
-system, because the TA state (not the `knox.kg.state` property) is what matters.
+The TA is authoritative. `knox.kg.state` is only a mirror, and its value is a
+state NAME (`Prenormal`, `Checking`, `Active`, `Locked`, `Completed`, `Error`);
+the app parses both names and integers.
 
-- A small arm64 helper (`app/src/main/assets/kgta_helper`, source in
-  `tools/kgta_helper.c`) is extracted once per app version and executed as
-  root. It `dlopen`s `/system/lib64/aidl_comm_kg_client.so` and calls the vendor
-  `vendor.samsung.hardware.tlc.kg.ISehKg` HAL. That HAL accepts uid 0 or 1000
-  and sends TA command `0x10a` (`TZ_KGTA_unlockScreen`); it does not require the
-  Java `com.samsung.android.knoxguard.STATUS` permission.
-- The Java path still runs afterwards: `su 10085 -c 'service call
-  knoxguard_service 35'`. It performs the lock-screen unbind and updates the
-  cached `knox.kg.state` property. Both paths are idempotent. The TA state and
-  the property are read in one `su` round-trip after both unlock paths.
-- The state is read from the TA (`service call knoxguard_service 29`); the
-  property is only a mirror.
-- On a device without the Samsung KG HAL, the helper fails cleanly and the
-  Java path is used. The HAL path is root-only; a normal app cannot reach the
-  vendor service.
-- The app-domain nudge found in the decompiled `kgclient` receivers runs after
-  the HAL and Java paths, so the client sees the TA already unlocked. Only
-  `ServiceIntentReceiver` (MANUAL_UNLOCK) runs by default: START_KNOXGUARD can
-  open the browser enrollment UI on a device that is not enrolled yet, and
-  CUSTOMER_APP replaces the customer-app slot, so both stay behind the
-  `FULL_NUDGES` switch. The startup nudge fires once per boot (device-protected
-  boot-id marker); results are logged to `run.log` as `[kg-broadcast]`.
-- Whether the receiver is reachable depends on its `exported` flag and manifest
-  permission, which cannot be confirmed without the device.
+- Flow: read the state first. Only `Active(2)` and `Locked(3)` are unlockable;
+  `Prenormal(0)`, `Checking(1)` and `Error(5)` are skipped, and `Completed(4)`
+  still gets the idempotent lockscreen unbind but no TA unlock.
+- `kgta_helper unlock` prints `pre_state`, the unlock attempt and `post_state`
+  in one run, and gates itself: outside 2/3 it does not call the TA, so a
+  prenormal or checking device cannot be forced into an invalid transition.
+- The vendor HAL unlock changes the TA. The system service transaction 35
+  runs as the kgclient uid (resolved through `PackageManager`, fallback 10085)
+  for the lockscreen unbind and the property update. If the nested `su <uid>`
+  is unavailable, the app retries the service call directly.
+- `MANUAL_UNLOCK` is client-side cleanup only: it clears the client's local
+  lock prefs, sends `KNOXGUARD_UNLOCKED` and reports `MANUAL_UNLOCK` to the
+  server. It is sent only after the TA reports a real unlock, never before
+  root.
+- TA errors are mapped: `513` RPMB unavailable, `519` HMAC mismatch, `-1006`
+  init failed. 513/519 park KG until the next reboot instead of retrying.
+- The keep worker re-applies the unlock if the mirror returns Active/Locked,
+  with a 10 minute cooldown stored per boot id.
+- The TA unlock may write the KG OTP fuse (`write fuse success ... state`);
+  treat it as one-way and test on a sacrificial unit. The unlock is per boot,
+  like root: the bootloader enforces before Android starts.
 
 The helper can be rebuilt with:
 
@@ -152,11 +150,9 @@ build does not need to rebuild it.
   checks `finit_module` and every ksud copy write. The UPID/JPID sender socket
   is bound once in Java and handed to native as an fd, removing the port
   re-bind race.
-- Root-only Knox Guard unlock through the vendor HAL, with the Java uid 10085
-  path retained for lock-screen cleanup and the state property. The worker
-  watches `knox.kg.state` without su and re-applies the unlock if the client
-  puts the device back into Active/Locked while root is live (10 min cooldown).
-  KG work can be disabled with the `kg_enabled` preference.
+- State-first Knox Guard unlock: TA unlock in Active/Locked only, kgclient-uid
+  service call for the lockscreen unbind and property, cleanup broadcast only
+  after a real unlock, and a per-boot watchdog with RPMB error parking.
 - Floating FAB menu for Home/Log/About.
 - Log in the app and under logcat tag `dfroot`; `run.log` in the app's private
   storage.

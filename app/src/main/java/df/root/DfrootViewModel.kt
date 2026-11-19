@@ -72,7 +72,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 targetOk = target.ok,
                 targetDetail = target.detail,
                 kgEnabled = KgWatchdog.enabled(context),
-                kgState = Probes.intProp("knox.kg.state", -1),
+                kgState = TextParse.kgState(Probes.prop("knox.kg.state")),
                 lastPass = lastPassLine(),
             )
         }
@@ -103,7 +103,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 managerVersion = managerVersion,
                 managerName = managerName,
                 kgEnabled = KgWatchdog.enabled(context),
-                kgState = Probes.intProp("knox.kg.state", -1),
+                kgState = TextParse.kgState(Probes.prop("knox.kg.state")),
                 lastPass = pass,
             )
         }
