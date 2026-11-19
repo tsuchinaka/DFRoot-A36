@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.9.1-persist` (`versionCode 23`).
+Current internal build: `3.9.2-target` (`versionCode 24`).
 
 ## Tested on
 
@@ -106,6 +106,12 @@ build does not need to rebuild it.
 
 ## Features
 
+- Target gate: every entry point (UI, boot chain, adb) refuses to run unless
+  the device is `a36xq`, the fingerprint says A36 and the kernel is an
+  `android15` 6.6 build. The module image also requires an exact
+  android-release + kernel match plus a vermagic sanity check against the
+  running kernel; on anything else the app says `UNSUPPORTED` instead of
+  patching memory it does not understand.
 - One-tap root from the app, or a headless adb broadcast.
 - Auto jailbreak on boot and unlock. `BootReceiver` only enqueues; the pass
   runs on a single worker inside the foreground service, behind a cheap gate
@@ -119,18 +125,18 @@ build does not need to rebuild it.
 - A foreground service stays up for the whole boot. Its keep worker adapts:
   30 s without root, 120 s with a healthy root side, and it requests a chain
   pass the moment a live root is observed to be gone.
-- The post-root scripts (`/data/dfroot/apply.sh`, `/data/dfroot/*.sh`,
-  KernelSU `service.d`, `post-fs-data.d`, `post-mount.d`, and each module's
-  `service.sh` / `post-fs-data.sh` / `post-mount.sh` / `boot-completed.sh`)
-  run from one root daemon per boot. KernelSU starts it from `service.d` at
-  boot; when the app finds root without it, it launches it once and pays a
-  single `su`. The daemon writes a world-readable heartbeat every 30 s, so
-  the app verifies the root side without any `su` call while the heartbeat is
-  fresh, restarts this app if Android kills it, exits on its own when the
-  boot id changes, and stamps its one-shot work per boot. A failed one-shot
-  backs off five minutes instead of retrying every loop, the daemon scripts
-  are staged in device-protected storage first (a root that arrives before
-  unlock still installs them), and the keep alarm relaxes from 3 to 10
+- The post-root scripts run from one root daemon per boot. KernelSU starts it
+  from `service.d` at boot; when the app finds root without it, it launches it
+  once and pays a single `su`. The daemon writes a world-readable heartbeat
+  every 30 s, so the app verifies the root side without any `su` call while the
+  heartbeat is fresh, restarts this app if Android kills it, exits on its own
+  when the boot id changes, and stamps its one-shot work per boot. It only
+  supervises what this install owns: `/data/dfroot/apply.sh`,
+  `/data/dfroot/*.sh` and `/data/dfroot/keep.d/*.sh` (opt-in). KernelSU's own
+  `service.d`, `post-fs-data.d`, `post-mount.d` and module scripts are left to
+  KernelSU — running them twice breaks modules.
+  A failed one-shot backs off five minutes, the daemon scripts are staged in
+  device-protected storage first, and the keep alarm relaxes from 3 to 10
   minutes once the root side is healthy.
 - `ksud` and `kgta_helper` are staged once per app version into both storages,
   so the exploit window does not pay the extraction I/O.
@@ -181,13 +187,14 @@ the status card says so and tells you to add DFRoot to the KernelSU superuser
 list. The app shows `LIVE` only when `su` actually answers.
 
 Auto jailbreak on boot and unlock is the switch on Home. It enables the boot
-receiver component, nothing else. The receiver fires on locked boot,
-boot completed, credential unlock, every lockscreen unlock and reboot actions,
-skips the exploit when su is
-already live or the /dev/df mutex is held, and arms a 90 s alarm watchdog
-that retries until su answers. Boot attempts land in device-protected
-boot.log and are mirrored into run.log once credential storage unlocks,
-so the Log tab shows them.
+receiver component, nothing else. The receiver fires on locked boot, boot
+completed, credential unlock and every lockscreen unlock, refuses to run on a
+device that does not pass the target gate, skips the exploit when su is
+already live or the /dev/df mutex is held, waits for the overlay only when
+the kernel can actually be patched, and retries on a 15/30/45/60 s ladder
+while the boot settles (90 s cap afterwards). Boot attempts land in
+device-protected boot.log and are mirrored into run.log once credential
+storage unlocks, so the Log tab shows them.
 
 ## ADB trigger
 
@@ -214,11 +221,13 @@ same `Runner.claim` prevents concurrent runs.
 
 - Never `rmmod kernelsu`. It panics the kernel and takes USB down with it.
 - The root shell has an empty `PATH`. Always use absolute paths.
-- The native watchdog reports `rc=2` even when the chain worked. Success is
-  judged by watching the modules load and `su` answering, not by the return
-  code.
+- Return codes: `0` success, `1` ksud failed, `2` watchdog inconclusive (the
+  chain may still have worked — the app waits for `su` when the stage-1 mutex
+  exists), `3` patching failed, `4` module load failed (KMI/vermagic),
+  `5` namespace/mount failed, `6` ksud staging failed.
 - The stage 1 mutex lives at `/dev/df`. If a run dies halfway it stays behind
-  and poisons boot until you reboot.
+  and later passes wait for `su` instead of re-exploting; only a reboot clears
+  it.
 - The ADB receiver is shell-only by permission. Do not lower it to an
   unprotected receiver; any app could trigger a kernel exploit.
 - The KG helper assumes the Samsung vendor HAL and `/system/lib64` arm64. On

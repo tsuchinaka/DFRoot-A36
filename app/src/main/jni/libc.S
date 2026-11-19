@@ -25,10 +25,22 @@ root_path:
     .asciz "/"
 mark_modprobe:
     .asciz "/dev/dfm0"
+mark_mod_fail:
+    .asciz "/dev/dfm7"
+mark_memfd_fail:
+    .asciz "/dev/dfm8"
+mark_dev_fail:
+    .asciz "/dev/dfm9"
+mark_data_fail:
+    .asciz "/dev/dfmA"
 mark_bind_ns:
     .asciz "/dev/dfm3"
+mark_ns_fail:
+    .asciz "/dev/dfmB"
 mark_bind_ok:
     .asciz "/dev/dfm4"
+mark_bind_fail:
+    .asciz "/dev/dfmC"
 mark_exec_fail:
     .asciz "/dev/dfm6"
 mark_ksud_ok:
@@ -63,6 +75,60 @@ soft_reboot_flag:
 
     .align 4
 
+/*
+ * Copy the ksud memfd ([sp,0]) to \dst.
+ * Stack layout while running (frame of 4112 bytes, owned by the caller):
+ *   [sp,0]  source fd      [sp,4]  destination fd
+ *   [sp,12] bytes pending  [sp,16] 4096-byte buffer
+ * Marks \fail if the destination cannot be opened or an I/O error truncates
+ * the copy, so the app can tell a truncated ksud from a working one.
+ */
+.macro copy_ksud dstpath, failpath
+    mov  x0, -100
+    adr  x1, \dstpath
+    movl x2, (O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC)
+    mov  x3, 0755
+    mov  x8, #SYS_openat
+    svc  0
+    tbnz w0, #31, 8f
+    str  w0, [sp, 4]
+97:
+    ldr  w0, [sp, 0]
+    add  x1, sp, #16
+    mov  x2, #4096
+    mov  x8, #SYS_read
+    svc  0
+    cmp  x0, #0
+    beq  96f
+    blt  98f
+    str  w0, [sp, 12]
+    add  x9, sp, #16
+95:
+    ldr  w0, [sp, 4]
+    mov  x1, x9
+    ldr  w2, [sp, 12]
+    mov  x8, #SYS_write
+    svc  0
+    cmp  x0, #0
+    ble  98f
+    add  x9, x9, x0
+    ldr  w2, [sp, 12]
+    sub  w2, w2, w0
+    str  w2, [sp, 12]
+    cbnz w2, 95b
+    b    97b
+98:
+    create_mark \failpath
+96:
+    ldr  w0, [sp, 4]
+    mov  x8, #SYS_close
+    svc  0
+    b    9f
+8:
+    create_mark \failpath
+9:
+.endm
+
 libc_start:
     stp x0, x1, [sp, #-16]!
     stp x2, x3, [sp, #-16]!
@@ -75,10 +141,9 @@ libc_start:
 
     // x0 -> int argc
     ldr     w1, [x0]            // w1 = argc
-    cbz     w1, matched      // argc == 0，直接开干
+    cbz     w1, matched      // argc == 0, run directly
 
-    // 假定 argv 按 8 字节对齐，位于 argc 后面
-    // 即布局为: int argc; int pad; char *argv[argc];
+    // argv layout: int argc; int pad; char *argv[argc];
     add     x2, x0, #8
     ldr     x3, [x2]            // x3 = argv[0]
     cbz     x3, return_now
@@ -90,7 +155,7 @@ strcmp_loop:
     ldrb    w6, [x4], #1
     cmp     w5, w6
     b.ne    return_now
-    cbnz    w5, strcmp_loop     // 还没遇到 '\0'，继续比较
+    cbnz    w5, strcmp_loop     // not at '\0' yet, keep comparing
 
 matched:
     // argv[0] == executable_path
@@ -108,6 +173,7 @@ matched:
     mov x2, xzr
     mov x8, #SYS_finit_module
     svc 0
+    cbnz w0, mod_load_fail
 
     // close lib fd
     mov     x0, x26
@@ -115,9 +181,25 @@ matched:
     svc     0
 
     create_mark mark_modprobe
+    b mod_ok
 
-    // Copy ksud from memfd to /dev/.ksud (bind mount target) and /data/system/ksud (--stage-from).
-    sub  sp, sp, #272
+mod_load_fail:
+    // The module refused to load (vermagic/KMI). Loading ksud anyway would
+    // leave SELinux enforcing and the chain would die silently later.
+    create_mark mark_mod_fail
+    mov     x0, #1
+    mov     x8, #SYS_exit
+    svc     #0
+
+mod_ok:
+
+    // Copy ksud from memfd to /dev/.ksud (bind mount target) and
+    // /data/system/ksud (--stage-from). 4096-byte buffer, and every write is
+    // looped to completion: a short write used to leave a truncated ksud.
+    // 4112 = 16 bytes of bookkeeping + the 4096-byte buffer; ADD/SUB
+    // immediates stop at 4095, so the frame is sized through x9.
+    mov  x9, #4112
+    sub  sp, sp, x9
 
     create_mark s2_pre_mark
 
@@ -127,37 +209,13 @@ matched:
     mov  x3, xzr
     mov  x8, #SYS_openat
     svc  0
-    tbnz w0, #31, s2_cp_done
+    tbnz w0, #31, s2_memfd_fail
     str  w0, [sp, 0]
     create_mark s2_fail_mark
 
     // copy 1: memfd -> /dev/.ksud (bind mount target)
-    mov  x0, -100
-    adr  x1, s2_dst_path
-    movl x2, (O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC)
-    mov  x3, 0755
-    mov  x8, #SYS_openat
-    svc  0
-    tbnz w0, #31, s2_cp2_start
-    str  w0, [sp, 4]
-s2_cp1_loop:
-    ldr  w0, [sp, 0]
-    add  x1, sp, 16
-    mov  x2, 256
-    mov  x8, #SYS_read
-    svc  0
-    cmp  x0, 0
-    ble  s2_cp1_close_dst
-    mov  x2, x0
-    ldr  w0, [sp, 4]
-    add  x1, sp, 16
-    mov  x8, #SYS_write
-    svc  0
-    b    s2_cp1_loop
-s2_cp1_close_dst:
-    ldr  w0, [sp, 4]
-    mov  x8, #SYS_close
-    svc  0
+    copy_ksud s2_dst_path, mark_dev_fail
+
     // seek src back to 0 for second copy
     ldr  w0, [sp, 0]
     mov  x1, xzr
@@ -166,34 +224,7 @@ s2_cp1_close_dst:
     svc  0
 
     // copy 2: memfd -> /data/system/ksud (--stage-from target)
-s2_cp2_start:
-    mov  x0, -100
-    adr  x1, s2_dst2_path
-    movl x2, (O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC)
-    mov  x3, 0755
-    mov  x8, #SYS_openat
-    svc  0
-    tbnz w0, #31, s2_cp_src_close
-    str  w0, [sp, 4]
-s2_cp2_loop:
-    ldr  w0, [sp, 0]
-    add  x1, sp, 16
-    mov  x2, 256
-    mov  x8, #SYS_read
-    svc  0
-    cmp  x0, 0
-    ble  s2_cp2_close_dst
-    mov  x2, x0
-    ldr  w0, [sp, 4]
-    add  x1, sp, 16
-    mov  x8, #SYS_write
-    svc  0
-    b    s2_cp2_loop
-s2_cp2_close_dst:
-    ldr  w0, [sp, 4]
-    mov  x8, #SYS_close
-    svc  0
-    b    s2_cp_src_close
+    copy_ksud s2_dst2_path, mark_data_fail
 
 s2_cp_src_close:
     ldr  w0, [sp, 0]
@@ -201,8 +232,16 @@ s2_cp_src_close:
     svc  0
 
 s2_cp_done:
-    add  sp, sp, #272
+    mov  x9, #4112
+    add  sp, sp, x9
     b    s2_copy_strs_end
+
+s2_memfd_fail:
+    mov  x9, #4112
+    add  sp, sp, x9
+    create_mark mark_memfd_fail
+    b    s2_copy_strs_end
+
     .balign 4
 s2_dst_path:
     .asciz "/dev/.ksud"
@@ -225,7 +264,7 @@ s2_copy_strs_end:
     movl x0, (CLONE_NEWNS)
     mov x8, #SYS_unshare
     svc 0
-    cbnz w0, myexit
+    b.ne ns_fail
 
     // mount(NULL, "/", NULL, MS_REC|MS_PRIVATE, NULL)
     mov x0, xzr
@@ -235,7 +274,7 @@ s2_copy_strs_end:
     mov x4, xzr
     mov x8, #SYS_mount
     svc 0
-    cbnz w0, myexit
+    b.ne ns_fail
 
     create_mark mark_bind_ok
 
@@ -248,7 +287,7 @@ s2_copy_strs_end:
     mov x4, xzr
     mov x8, #SYS_mount
     svc 0
-    cbnz w0, myexit
+    b.ne bind_fail
 
     // x26=1: include --soft-reboot; x26=0: omit it.
     adr     x9, soft_reboot_flag
@@ -312,6 +351,18 @@ s2_wait_ksud:
     create_mark mark_ksud_ok
 
 myexit:
+    mov x0, #1
+    mov x8, #SYS_exit
+    svc #0
+
+ns_fail:
+    create_mark mark_ns_fail
+    mov x0, #1
+    mov x8, #SYS_exit
+    svc #0
+
+bind_fail:
+    create_mark mark_bind_fail
     mov x0, #1
     mov x8, #SYS_exit
     svc #0

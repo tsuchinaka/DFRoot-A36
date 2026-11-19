@@ -46,6 +46,7 @@ public class KeepService extends Service {
     private static final long KEEP_ALARM_MS = 180000L;
     private static final long KEEP_ALARM_ROOTED_MS = 600000L;
     private static final long TICK_NO_ROOT_MS = 30000L;
+    private static final long TICK_NO_ROOT_SLOW_MS = 300000L;
     private static final long TICK_ROOTED_MS = 120000L;
     private static final long TICK_BUSY_MS = 15000L;
     private static final long CHAIN_MIN_GAP_MS = 60000L;
@@ -306,7 +307,10 @@ public class KeepService extends Service {
                             } else if (BootReceiver.isAutoEnabled(this) && chainIdle()) {
                                 requestChain(this, "tick");
                             }
-                            delay = TICK_NO_ROOT_MS;
+                            // Without auto-root there is nothing to gain from a
+                            // fast cadence: relax the no-root tick to 5 minutes.
+                            delay = BootReceiver.isAutoEnabled(this)
+                                    ? TICK_NO_ROOT_MS : TICK_NO_ROOT_SLOW_MS;
                         } else {
                             knownLive = true;
                             delay = status == PostRoot.BUSY ? TICK_BUSY_MS : TICK_ROOTED_MS;

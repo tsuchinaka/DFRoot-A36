@@ -87,8 +87,15 @@
     <string name="result_success">Root is live — su now resolves to KernelSU.</string>
     <string name="result_installed_not_granted">Root is installed, but su is refused to this app — grant DFRoot in KernelSU Manager to verify it.</string>
     <string name="result_ksud_failed">ksud exited with an error.</string>
+    <string name="result_watchdog">The chain ran but the success marker was not observed — su may still come up.</string>
+    <string name="result_module_failed">The dirtyfrag module failed to load (KMI mismatch?).</string>
+    <string name="result_mount_failed">The root shell failed in the mount-namespace stage.</string>
+    <string name="result_staging_failed">Failed to stage ksud onto the device.</string>
     <string name="result_patch_failed">Failed to patch files.</string>
     <string name="result_exception">Exploit threw: %1$s</string>
+
+    <string name="home_big_unsupported">UNSUPPORTED</string>
+    <string name="target_unsupported">This build is only for the Galaxy A36 5G (a36xq, android15 6.6 kernel).</string>
 
     <string name="keep_channel">DFRoot</string>
     <string name="keep_title">DFRoot</string>

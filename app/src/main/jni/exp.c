@@ -351,23 +351,68 @@ static const struct KoImage *select_ko_image(int andr, int major, int minor) {
         {16, 6, 12, dirtyfrag_ko_16_6_12_start, dirtyfrag_ko_16_6_12_end},
         {17, 6, 18, dirtyfrag_ko_17_6_18_start, dirtyfrag_ko_17_6_18_end},
     };
-    const struct KoImage *fb = NULL;
+    /* Exact match only. A major.minor fallback would load a module built for a
+     * different android release into the wrong kernel, which is a brick, not
+     * a failure. */
     for (size_t i = 0; i < sizeof(imgs)/sizeof(imgs[0]); i++) {
-        if (imgs[i].kver_major != major || imgs[i].kver_minor != minor) continue;
-        if (imgs[i].android_release == andr) return &imgs[i];
-        if (!fb) fb = &imgs[i];
+        if (imgs[i].kver_major == major && imgs[i].kver_minor == minor
+                && imgs[i].android_release == andr) {
+            return &imgs[i];
+        }
     }
-    return fb;
+    return NULL;
 }
+
+static char g_uts_release[128];
 
 static int read_device_versions(int *andr, int *major, int *minor) {
     struct utsname u;
     if (uname(&u) != 0) return -1;
+    snprintf(g_uts_release, sizeof(g_uts_release), "%s", u.release);
     if (sscanf(u.release, "%d.%d", major, minor) != 2) return -1;
     const char *m = strstr(u.release, "android");
     if (!m) return -1;
     *andr = atoi(m + 7);
     return (*andr > 0) ? 0 : -1;
+}
+
+/* The bundled .ko files are DDK builds, so their vermagic carries the KMI
+ * build release (e.g. "6.6.127-4k-g46a034eca005-dirty"), not the device's
+ * UTS_RELEASE. Verify the major.minor family and the arch instead: that is
+ * the granularity the kernel loader itself enforces on these builds. */
+static int ko_kmi_ok(const char *start, const char *end, int major, int minor,
+                     struct Reporter *reporter) {
+    size_t len = (size_t)(end - start);
+    const char *vm = NULL;
+    for (size_t i = 0; i + 9 <= len; i++) {
+        if (memcmp(start + i, "vermagic=", 9) == 0) {
+            vm = start + i + 9;
+            break;
+        }
+    }
+    if (!vm) {
+        REPORTLN("no vermagic string in ko image");
+        return 0;
+    }
+    char tok[96];
+    size_t j = 0;
+    while (vm[j] != '\0' && vm[j] != ' ' && j < sizeof(tok) - 1
+            && (size_t)(vm + j - start) < len) {
+        tok[j] = vm[j];
+        j++;
+    }
+    tok[j] = '\0';
+    int vm_major = 0, vm_minor = 0;
+    if (sscanf(tok, "%d.%d", &vm_major, &vm_minor) != 2) {
+        REPORTLN("unparseable vermagic: %s", tok);
+        return 0;
+    }
+    if (vm_major != major || vm_minor != minor) {
+        REPORTLN("vermagic %s does not match running %d.%d", tok, major, minor);
+        return 0;
+    }
+    REPORTLN("vermagic ok: %s", tok);
+    return 1;
 }
 
 /* Pad payload to a multiple of 16 bytes in a heap buffer.
@@ -389,8 +434,12 @@ static int patch_ko(struct Reporter *reporter) {
     }
     const struct KoImage *ko = select_ko_image(andr, major, minor);
     if (!ko) {
-        REPORTLN("unsupported kernel %d.%d android %d", major, minor, andr); return 1;
+        REPORTLN("unsupported kernel %s (android%d %d.%d)", g_uts_release, andr, major, minor); return 1;
     }
+    if (!ko_kmi_ok(ko->start, ko->end, major, minor, reporter)) {
+        return 1;
+    }
+    REPORTLN("* target %s", g_uts_release);
     REPORTLN("* ko android%d-%d.%d (%d bytes)",
              ko->android_release, ko->kver_major, ko->kver_minor,
              (int)(ko->end - ko->start));
@@ -593,14 +642,22 @@ Java_df_root_MainActivity_nativeRunAll(JNIEnv *env, jclass clz __attribute__((un
     static const struct {
         const char *path;
         const char *msg;
+        int fatal_rc;      /* 0 = informational; otherwise the pass result */
     } markers[] = {
-        { "/dev/df",    "1. libc++: mutex acquired, forking"       },
-        { "/dev/dfm0",  "2. libc: module loaded - selinux permissive" },
-        { "/dev/dfm1",  "3. reading ksud from memfd"               },
-        { "/dev/dfm2",  "4. staging ksud files"                    },
-        { "/dev/dfm3",  "5. switching namespace"                   },
-        { "/dev/dfm4",  "6. bind mounting logcat"                  },
-        { "/dev/dfm5",  "7. launching ksud"                        },
+        { "/dev/df",    "stage1: libc++ mutex acquired, forking",     0 },
+        { "/dev/dfm0",  "stage2: module loaded - selinux permissive", 0 },
+        { "/dev/dfm7",  "stage2: finit_module FAILED (module/KMI)",   4 },
+        { "/dev/dfm1",  "stage2: reading ksud from memfd",            0 },
+        { "/dev/dfm8",  "stage2: ksud memfd not readable",            6 },
+        { "/dev/dfm2",  "stage2: staging ksud files",                 0 },
+        { "/dev/dfm9",  "stage2: cannot open /dev/.ksud",             6 },
+        { "/dev/dfmA",  "stage2: cannot open /data/system/ksud",      6 },
+        { "/dev/dfm3",  "stage2: switching namespace",                0 },
+        { "/dev/dfmB",  "stage2: unshare/private mount FAILED",       5 },
+        { "/dev/dfm4",  "stage2: bind mounting logcat",               0 },
+        { "/dev/dfmC",  "stage2: bind mount FAILED",                  5 },
+        { "/dev/dfm5",  "stage2: launching ksud",                     0 },
+        { "/dev/dfm6",  "stage2: ksud execve FAILED",                 1 },
     };
     int seen[sizeof(markers)/sizeof(markers[0])] = {0};
 
@@ -610,6 +667,10 @@ Java_df_root_MainActivity_nativeRunAll(JNIEnv *env, jclass clz __attribute__((un
             if (!seen[j] && has_marker(markers[j].path)) {
                 seen[j] = 1;
                 REPORTLN("%s", markers[j].msg);
+                if (markers[j].fatal_rc) {
+                    rc = markers[j].fatal_rc;
+                    goto done;
+                }
                 if (strcmp(markers[j].path, "/dev/dfm5") == 0) {
                     // fork succeeded — poll 300ms for execve failure
                     for (int w = 0; w < 1000; w += 10) {

@@ -107,6 +107,19 @@ final class BootChain {
     }
 
     private static void work(Context appCtx, Context deCtx, String act, Buffer log, long t0) {
+        TargetGuard.Result target = TargetGuard.check(appCtx);
+        if (!target.ok) {
+            if (!"unsupported".equals(stageName)) {
+                log.report("chain: target refused: " + target.detail + "\n");
+            }
+            stageName = "unsupported";
+            KeepService.cancelRetry(appCtx);
+            nextRetryAt = 0L;
+            return;
+        }
+        if ("unsupported".equals(stageName)) {
+            stageName = "";
+        }
         if (RootProbe.probe().live) {
             if ("rooted".equals(stageName)) {
                 log.report("chain: su live and already marked rooted this boot\n");
@@ -206,7 +219,11 @@ final class BootChain {
             return;
         }
 
-        boolean patchPossible = rc == 0 || new File("/dev/df").exists();
+        // rc == 0 means the chain confirmed success; rc == 2 with the mutex
+        // means the watchdog missed the marker but stage 1 ran. Every other rc
+        // is a diagnosed failure (module, mount, staging, ksud) and waiting for
+        // su would only burn three minutes of polls.
+        boolean patchPossible = rc == 0 || (rc == 2 && new File("/dev/df").exists());
         if (patchPossible) {
             if (rc != 0) {
                 // rc == 0 already waited inside Runner.run; the mutex path did not.

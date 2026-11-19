@@ -35,17 +35,20 @@ fun HomeScreen(
 ) {
     val colors = MaterialTheme.colorScheme
     val status = when {
+        !state.targetOk -> stringResource(R.string.home_big_unsupported)
         !state.suProbed -> stringResource(R.string.home_big_checking)
         state.rootLive -> stringResource(R.string.home_big_live)
         else -> stringResource(R.string.home_big_idle)
     }
     val detail = when {
+        !state.targetOk -> state.targetDetail.ifEmpty { stringResource(R.string.target_unsupported) }
         !state.suProbed -> stringResource(R.string.root_checking)
         state.rootLive -> stringResource(R.string.su_ok)
         state.chainRan -> stringResource(R.string.home_big_installed)
         else -> stringResource(R.string.root_inactive)
     }
     val statusColor = when {
+        !state.targetOk -> colors.error
         state.rootLive -> colors.primary
         state.chainRan && state.suProbed -> colors.error
         else -> colors.onSurface
@@ -78,7 +81,7 @@ fun HomeScreen(
         Spacer(Modifier.height(24.dp))
         Button(
             onClick = onRun,
-            enabled = !state.running,
+            enabled = !state.running && state.targetOk,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 56.dp),

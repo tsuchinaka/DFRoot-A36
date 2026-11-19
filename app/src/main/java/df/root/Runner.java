@@ -67,6 +67,11 @@ final class Runner {
     }
 
     static int run(Context ctx, IReporter reporter, boolean softReboot) throws Exception {
+        TargetGuard.Result target = TargetGuard.check(ctx);
+        if (!target.ok) {
+            reporter.report("target refused: " + target.detail + "\n");
+            throw new IllegalStateException("target refused: " + target.detail);
+        }
         IpSecManager.UdpEncapsulationSocket encapSock = null;
         IpSecManager.SecurityParameterIndex spiObj = null;
         IpSecTransform transform = null;

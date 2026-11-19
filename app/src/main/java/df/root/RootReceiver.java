@@ -37,6 +37,11 @@ public class RootReceiver extends BroadcastReceiver {
                     }
                 } catch (Throwable ignored) {
                 }
+                TargetGuard.Result target = TargetGuard.check(app);
+                if (!target.ok) {
+                    Log.w(TAG, "adb root: target refused: " + target.detail);
+                    return;
+                }
                 if (!Runner.claim()) {
                     Log.i(TAG, "adb root: a run is already in flight");
                     return;

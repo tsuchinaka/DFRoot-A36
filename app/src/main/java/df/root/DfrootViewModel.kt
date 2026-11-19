@@ -36,6 +36,8 @@ data class DfrootState(
     val deviceModel: String = "",
     val managerInstalled: Boolean = false,
     val managerVersion: String = "",
+    val targetOk: Boolean = true,
+    val targetDetail: String = "",
     val snackbar: String? = null,
 )
 
@@ -53,12 +55,15 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     private var runJob: Job? = null
 
     init {
+        val target = TargetGuard.check(app)
         _state.update {
             it.copy(
                 kernelVersion = System.getProperty("os.version") ?: "",
                 deviceModel = android.os.Build.MODEL,
                 autoEnabled = isAutoEnabled(),
                 log = loadPersistedLog(),
+                targetOk = target.ok,
+                targetDetail = target.detail,
             )
         }
         probeJob = viewModelScope.launch {
@@ -86,6 +91,12 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     }
 
     fun runChain() {
+        if (!TargetGuard.check(context).ok) {
+            _state.update {
+                it.copy(snackbar = context.getString(R.string.target_unsupported))
+            }
+            return
+        }
         if (_state.value.running) {
             _state.update { it.copy(snackbar = context.getString(R.string.already_running)) }
             return
@@ -103,8 +114,15 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 val rc = withContext(Dispatchers.IO) { Runner.run(context, this@DfrootViewModel, false) }
                 report("\nRESULT rc=$rc\n")
 
-                if (rc == 0) {
-                    RootRecord.markRooted(context)
+                // rc == 0: the chain confirmed success. rc == 2 with the stage-1
+                // mutex present: the watchdog missed the marker but stage 1 ran,
+                // so ksud may still bring su up. Anything else is a diagnosed
+                // failure with no reason to wait.
+                val maybeInstalled = rc == 0 || (rc == 2 && File("/dev/df").exists())
+                if (maybeInstalled) {
+                    if (rc == 0) {
+                        RootRecord.markRooted(context)
+                    }
                     report(context.getString(R.string.waiting_for_install) + "\n")
                     var lastNote = 0L
                     while (System.currentTimeMillis() - startedAt < ROOT_WAIT_MS) {
@@ -252,6 +270,10 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         live -> R.string.result_success
         rc == 0 -> R.string.result_installed_not_granted
         rc == 1 -> R.string.result_ksud_failed
+        rc == 2 -> R.string.result_watchdog
+        rc == 4 -> R.string.result_module_failed
+        rc == 5 -> R.string.result_mount_failed
+        rc == 6 -> R.string.result_staging_failed
         else -> R.string.result_patch_failed
     }
 

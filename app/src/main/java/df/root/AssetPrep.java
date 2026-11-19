@@ -67,17 +67,39 @@ final class AssetPrep {
             }
         }
         if (ok) {
-            try {
-                File marker = new File(ctx.getFilesDir(), "assets-staged");
-                FileOutputStream out = new FileOutputStream(marker, false);
-                try {
-                    out.write(String.valueOf(version).getBytes(StandardCharsets.UTF_8));
-                } finally {
-                    out.close();
-                }
-            } catch (Throwable ignored) {
-            }
+            writeMarker(ctx, version);
             Log.i(TAG, "assets staged for v" + version);
+        }
+    }
+
+    /**
+     * The marker must exist in BOTH storages: the boot chain runs with a
+     * device-protected context, so a credential-only marker made every pass
+     * re-stage the 6 MB payload.
+     */
+    private static void writeMarker(Context ctx, int version) {
+        String value = String.valueOf(version);
+        writeMarkerFile(new File(ctx.getFilesDir(), "assets-staged"), value);
+        try {
+            Context de = ctx.createDeviceProtectedStorageContext();
+            writeMarkerFile(new File(de.getFilesDir(), "assets-staged"), value);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void writeMarkerFile(File file, String value) {
+        try {
+            File parent = file.getParentFile();
+            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+                return;
+            }
+            FileOutputStream out = new FileOutputStream(file, false);
+            try {
+                out.write(value.getBytes(StandardCharsets.UTF_8));
+            } finally {
+                out.close();
+            }
+        } catch (Throwable ignored) {
         }
     }
 
