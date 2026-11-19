@@ -67,7 +67,7 @@ final class KgBroadcast {
     /** Fire the app-domain nudges once per boot, before root exists. */
     static void appOnly(final Context ctx) {
         Thread t = new Thread(() -> {
-            if (alreadyNudged(ctx)) {
+            if (!KgWatchdog.enabled(ctx) || alreadyNudged(ctx)) {
                 return;
             }
             int state = Probes.intProp("knox.kg.state", -1);
@@ -89,6 +89,9 @@ final class KgBroadcast {
 
     /** Returns lines ready for the run log; never throws. */
     static String apply(Context ctx) {
+        if (!KgWatchdog.enabled(ctx)) {
+            return "[kg-broadcast] disabled by preference\n";
+        }
         int state = Probes.intProp("knox.kg.state", -1);
         StringBuilder out = new StringBuilder();
         out.append("[kg-broadcast] state=").append(state)
@@ -139,7 +142,7 @@ final class KgBroadcast {
                 intent.putExtra("customerPackageName", extra);
             }
             ctx.sendBroadcast(intent);
-            return "sent";
+            return "queued";
         } catch (Throwable t) {
             Log.w(TAG, "kg broadcast " + action + ": " + t);
             return "blocked";
@@ -157,7 +160,8 @@ final class KgBroadcast {
             if (!mark.isFile()) {
                 return false;
             }
-            return bootId().equals(readTrim(mark));
+            String value = markerValue();
+            return !value.isEmpty() && value.equals(readTrim(mark));
         } catch (Throwable t) {
             return false;
         }
@@ -172,7 +176,7 @@ final class KgBroadcast {
             }
             FileOutputStream out = new FileOutputStream(mark, false);
             try {
-                out.write(bootId().getBytes(StandardCharsets.UTF_8));
+                out.write(markerValue().getBytes(StandardCharsets.UTF_8));
             } finally {
                 out.close();
             }
@@ -188,15 +192,9 @@ final class KgBroadcast {
         }
     }
 
-    private static String bootId() {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                new FileInputStream("/proc/sys/kernel/random/boot_id"),
-                StandardCharsets.UTF_8))) {
-            String line = reader.readLine();
-            return line == null ? "" : line.trim();
-        } catch (Throwable t) {
-            return "";
-        }
+    /** Empty when unreadable: then the nudge is not throttled. */
+    private static String markerValue() {
+        return BootId.current();
     }
 
     private static String readTrim(File file) {

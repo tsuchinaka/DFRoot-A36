@@ -86,7 +86,10 @@ final class BootChain {
                 return;
             }
             claimed = true;
-            log.report("chain: " + act + "\n");
+            log.report("chain: " + act + " v" + versionName(appCtx)
+                    + " dev=" + android.os.Build.DEVICE
+                    + " boot=" + BootId.current()
+                    + " kernel=" + System.getProperty("os.version") + "\n");
             work(appCtx, deCtx, act, log, t0);
         } catch (Throwable t) {
             log.report("chain: pass failed " + t + "\n");
@@ -97,12 +100,15 @@ final class BootChain {
             log.report("chain: total " + (SystemClock.elapsedRealtime() - t0) + "ms\n");
             saveStage(deCtx);
             log.flush(appCtx, deCtx);
-            if (claimed) {
-                try {
-                    PostRoot.tick(appCtx);
-                } catch (Throwable ignored) {
-                }
-            }
+        }
+    }
+
+    private static String versionName(Context ctx) {
+        try {
+            return ctx.getPackageManager()
+                    .getPackageInfo(ctx.getPackageName(), 0).versionName;
+        } catch (Throwable t) {
+            return "?";
         }
     }
 
@@ -372,7 +378,7 @@ final class BootChain {
             }
         } catch (Throwable ignored) {
         }
-        String current = bootId();
+        String current = BootId.current();
         if (!current.equals(map.getOrDefault("boot_id", ""))) {
             stageBootId = current;
             stageName = "";
@@ -391,7 +397,8 @@ final class BootChain {
     private static void saveStage(Context deCtx) {
         try {
             File f = new File(deCtx.getFilesDir(), STAGE_FILE);
-            FileOutputStream out = new FileOutputStream(f, false);
+            File tmp = new File(f.getPath() + ".tmp");
+            FileOutputStream out = new FileOutputStream(tmp, false);
             try {
                 out.write(("boot_id=" + stageBootId + "\n"
                         + "stage=" + stageName + "\n"
@@ -402,19 +409,14 @@ final class BootChain {
             } finally {
                 out.close();
             }
+            if (!tmp.renameTo(f)) {
+                //noinspection ResultOfMethodCallIgnored
+                tmp.delete();
+            }
         } catch (Throwable ignored) {
         }
     }
 
-    private static String bootId() {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                new FileInputStream("/proc/sys/kernel/random/boot_id"), StandardCharsets.UTF_8))) {
-            String line = reader.readLine();
-            return line == null ? "" : line.trim();
-        } catch (Throwable t) {
-            return "";
-        }
-    }
 
     private static int parse(String value) {
         try {

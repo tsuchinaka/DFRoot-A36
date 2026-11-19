@@ -57,6 +57,15 @@ final class AssetPrep {
     }
 
     static synchronized void prepare(Context ctx) {
+        try {
+            long free = new android.os.StatFs(ctx.getFilesDir().getAbsolutePath())
+                    .getAvailableBytes();
+            if (free < 24L * 1024L * 1024L) {
+                Log.w(TAG, "asset prep skipped, low space: " + free);
+                return;
+            }
+        } catch (Throwable ignored) {
+        }
         int version = versionCode(ctx);
         boolean ok = true;
         for (String name : ASSETS) {

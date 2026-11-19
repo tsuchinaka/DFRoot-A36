@@ -213,9 +213,22 @@ final class Runner {
      * permission, so the root helper works even when the Java service rejects
      * uid 10085. The Java path still runs afterwards for the lock-screen
      * unbind and the cached knox.kg.state property. Both are idempotent.
+     *
+     * Transaction codes are the empirical AIDL order used by the vendor
+     * service: 29 = getKgState, 35 = unlockScreen. A firmware change shows up
+     * as an odd parcel and the raw output stays in the log.
      */
+    static void applyKgOnly(Context ctx, IReporter reporter) {
+        applyKgFix(ctx, reporter);
+    }
+
     private static void applyKgFix(Context ctx, IReporter reporter) {
+        if (!KgWatchdog.enabled(ctx)) {
+            reporter.report("[kg] disabled by preference\n");
+            return;
+        }
         String hal = runKgtaHelper(ctx, "unlock");
+        int halState = parseHalState(hal);
         String unlock = runAndRead(30L, "su", "10085", "-c", KG_UNLOCK);
         if (unlock == null || unlock.trim().isEmpty()) {
             unlock = runAndRead(30L, "su", "--mount-master", "-c",
@@ -223,21 +236,34 @@ final class Runner {
         }
         // After the TA is unlocked, so the client state sees the new state.
         reporter.report(KgBroadcast.apply(ctx));
-        String state = runAndRead(20L, "su", "-c",
-                KG_STATE + "; echo ---; getprop knox.kg.state");
-        String ta = state;
-        String prop = "";
-        if (state != null) {
-            int split = state.indexOf("---");
-            if (split >= 0) {
-                ta = state.substring(0, split);
-                prop = state.substring(split + 3);
-            }
+        String ta = null;
+        if (halState < 0) {
+            // The helper already printed the TA state; only pay the extra su
+            // when it did not run.
+            ta = runAndRead(20L, "su", "-c", KG_STATE);
         }
+        String prop = Probes.prop("knox.kg.state");
+        int state = halState >= 0 ? halState : taState(ta);
         reporter.report("[kg] hal=" + oneLine(hal)
                 + " unlock=" + oneLine(unlock)
-                + " state=" + taState(ta)
-                + " prop=" + oneLine(prop) + "\n");
+                + " state=" + state
+                + " prop=" + (prop.isEmpty() ? "?" : prop) + "\n");
+    }
+
+    private static int parseHalState(String out) {
+        if (out == null) {
+            return -1;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("state=(-?\\d+)").matcher(out);
+        if (!m.find()) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(m.group(1));
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 
     /**

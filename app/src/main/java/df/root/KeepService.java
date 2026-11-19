@@ -49,6 +49,7 @@ public class KeepService extends Service {
     private static final long TICK_NO_ROOT_SLOW_MS = 300000L;
     private static final long TICK_ROOTED_MS = 120000L;
     private static final long TICK_BUSY_MS = 15000L;
+    private static final long TICK_MIN_GAP_MS = 10000L;
     private static final long CHAIN_MIN_GAP_MS = 60000L;
     private static final long RETRY_GRACE_MS = 30000L;
 
@@ -62,7 +63,9 @@ public class KeepService extends Service {
     private static volatile boolean running;
     private static volatile boolean knownLive;
     private static volatile long lastChainRequest;
+    private static volatile long lastTickAt;
     private static Thread worker;
+    private volatile boolean notifRooted;
 
     static void start(Context ctx) {
         Intent i = new Intent(ctx, KeepService.class);
@@ -242,6 +245,10 @@ public class KeepService extends Service {
     }
 
     private void promote() {
+        promote(notifRooted);
+    }
+
+    private void promote(boolean rooted) {
         try {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (nm != null) {
@@ -253,8 +260,10 @@ public class KeepService extends Service {
             Notification n = new Notification.Builder(this, CHANNEL)
                     .setSmallIcon(R.drawable.ic_launcher_monochrome)
                     .setContentTitle(getString(R.string.keep_title))
-                    .setContentText(getString(R.string.keep_text))
+                    .setContentText(getString(rooted
+                            ? R.string.keep_text_rooted : R.string.keep_text_waiting))
                     .setOngoing(true)
+                    .setOnlyAlertOnce(true)
                     .setCategory(Notification.CATEGORY_SERVICE)
                     .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
                     .build();
@@ -294,26 +303,40 @@ public class KeepService extends Service {
             while (running) {
                 long delay;
                 try {
-                    if (Runner.isClaimed()) {
-                        delay = TICK_BUSY_MS;
+                    long since = SystemClock.elapsedRealtime() - lastTickAt;
+                    if (lastTickAt > 0 && since < TICK_MIN_GAP_MS) {
+                        // SCREEN_ON and USER_PRESENT poke the worker; do not
+                        // pay two su probes for the same event.
+                        delay = TICK_MIN_GAP_MS - since;
                     } else {
-                        int status = PostRoot.tick(this);
-                        if (status == PostRoot.DEAD) {
-                            if (knownLive) {
-                                knownLive = false;
-                                BootChain.noteRootLost();
-                                Log.i(TAG, "keep: root dropped, requesting chain");
-                                requestChain(this, "su-drop");
-                            } else if (BootReceiver.isAutoEnabled(this) && chainIdle()) {
-                                requestChain(this, "tick");
-                            }
-                            // Without auto-root there is nothing to gain from a
-                            // fast cadence: relax the no-root tick to 5 minutes.
-                            delay = BootReceiver.isAutoEnabled(this)
-                                    ? TICK_NO_ROOT_MS : TICK_NO_ROOT_SLOW_MS;
+                        lastTickAt = SystemClock.elapsedRealtime();
+                        if (Runner.isClaimed()) {
+                            delay = TICK_BUSY_MS;
                         } else {
-                            knownLive = true;
-                            delay = status == PostRoot.BUSY ? TICK_BUSY_MS : TICK_ROOTED_MS;
+                            int status = PostRoot.tick(this);
+                            if (status == PostRoot.DEAD) {
+                                updateNotification(false);
+                                if (knownLive) {
+                                    knownLive = false;
+                                    BootChain.noteRootLost();
+                                    Log.i(TAG, "keep: root dropped, requesting chain");
+                                    requestChain(this, "su-drop");
+                                } else if (BootReceiver.isAutoEnabled(this) && chainIdle()) {
+                                    requestChain(this, "tick");
+                                }
+                                // Without auto-root there is nothing to gain
+                                // from a fast cadence: relax to 5 minutes.
+                                delay = BootReceiver.isAutoEnabled(this)
+                                        ? TICK_NO_ROOT_MS : TICK_NO_ROOT_SLOW_MS;
+                            } else {
+                                knownLive = true;
+                                updateNotification(true);
+                                if (status == PostRoot.LIVE) {
+                                    KgWatchdog.maybeFix(this);
+                                }
+                                delay = status == PostRoot.BUSY
+                                        ? TICK_BUSY_MS : TICK_ROOTED_MS;
+                            }
                         }
                     }
                 } catch (Throwable t) {
@@ -344,6 +367,14 @@ public class KeepService extends Service {
 
     private static long currentKeepDelay() {
         return knownLive ? KEEP_ALARM_ROOTED_MS : KEEP_ALARM_MS;
+    }
+
+    private void updateNotification(boolean rooted) {
+        if (notifRooted == rooted) {
+            return;
+        }
+        notifRooted = rooted;
+        promote(rooted);
     }
 
     private static void poke() {

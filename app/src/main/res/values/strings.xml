@@ -100,4 +100,6 @@
     <string name="keep_channel">DFRoot</string>
     <string name="keep_title">DFRoot</string>
     <string name="keep_text">Post-root scripts running</string>
+    <string name="keep_text_waiting">Waiting for root</string>
+    <string name="keep_text_rooted">Root live, scripts running</string>
 </resources>

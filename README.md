@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.9.3-native` (`versionCode 25`).
+Current internal build: `3.9.4-kg` (`versionCode 26`).
 
 ## Tested on
 
@@ -147,7 +147,10 @@ build does not need to rebuild it.
   is bound once in Java and handed to native as an fd, removing the port
   re-bind race.
 - Root-only Knox Guard unlock through the vendor HAL, with the Java uid 10085
-  path retained for lock-screen cleanup and the state property.
+  path retained for lock-screen cleanup and the state property. The worker
+  watches `knox.kg.state` without su and re-applies the unlock if the client
+  puts the device back into Active/Locked while root is live (10 min cooldown).
+  KG work can be disabled with the `kg_enabled` preference.
 - Floating FAB menu for Home/Log/About.
 - Log in the app and under logcat tag `dfroot`; `run.log` in the app's private
   storage.

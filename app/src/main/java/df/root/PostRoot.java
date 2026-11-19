@@ -53,6 +53,8 @@ final class PostRoot {
 
     private static final String SUP_SH =
             "#!/system/bin/sh\n"
+                    + "export PATH=/system/bin:/system/xbin:/vendor/bin\n"
+                    + "umask 022\n"
                     + "# DFRoot supervisor: one instance per boot, heartbeat every 30 s.\n"
                     + "mkdir -p /data/dfroot/run /data/dfroot/log /data/adb/service.d 2>/dev/null\n"
                     + "pidfile=/data/dfroot/run/sup.pid\n"
@@ -71,6 +73,9 @@ final class PostRoot {
                     + "  rm -f /data/adb/service.d/dfroot-keep.sh\n"
                     + "  touch \"${MARK}init\"\n"
                     + "fi\n"
+                    + "hb=" + HEARTBEAT + "\n"
+                    + "( while true; do echo $(cut -d' ' -f1 /proc/uptime) > \"$hb\"; chmod 644 \"$hb\" 2>/dev/null; sleep 30; done ) &\n"
+                    + "HB=$!\n"
                     + "log() { echo \"$(date +%s) $*\" >> /data/dfroot/log/postroot.log; }\n"
                     + "alive() { [ -f \"$1\" ] && [ -d \"/proc/$(cat \"$1\" 2>/dev/null)\" ]; }\n"
                     + "run_keep() {\n"
@@ -109,10 +114,14 @@ final class PostRoot {
                     + "  boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
                     + "  if [ -n \"$START_BOOT\" ] && [ -n \"$boot\" ] && [ \"$boot\" != \"$START_BOOT\" ]; then\n"
                     + "    log \"boot id changed, exiting\"\n"
+                    + "    kill $HB 2>/dev/null\n"
                     + "    exit 0\n"
                     + "  fi\n"
-                    + "  echo $(date +%s) > " + HEARTBEAT + "\n"
-                    + "  chmod 644 " + HEARTBEAT + " 2>/dev/null\n"
+                    + "  if [ -f /data/dfroot/log/postroot.log ] && [ $(wc -c < /data/dfroot/log/postroot.log 2>/dev/null || echo 0) -gt 524288 ]; then\n"
+                    + "    tail -c 262144 /data/dfroot/log/postroot.log > /data/dfroot/log/postroot.log.tmp 2>/dev/null\n"
+                    + "    mv /data/dfroot/log/postroot.log.tmp /data/dfroot/log/postroot.log 2>/dev/null\n"
+                    + "    chmod 644 /data/dfroot/log/postroot.log 2>/dev/null\n"
+                    + "  fi\n"
                     + "  pidof df.root >/dev/null 2>&1 || am start-foreground-service -n df.root/.KeepService >/dev/null 2>&1\n"
                     + "  run_keep /data/dfroot/apply.sh\n"
                     + "  for f in /data/dfroot/*.sh; do\n"
@@ -162,9 +171,13 @@ final class PostRoot {
             if (line == null) {
                 return false;
             }
-            long beat = Long.parseLong(line.trim());
-            long age = System.currentTimeMillis() / 1000L - beat;
-            return age >= 0 && age * 1000L < HEARTBEAT_FRESH_MS;
+            double beat = Double.parseDouble(line.trim());
+            double now = BootId.uptime();
+            if (now < 0) {
+                return false;
+            }
+            double age = now - beat;
+            return age >= -5 && age * 1000.0 < HEARTBEAT_FRESH_MS;
         } catch (Throwable t) {
             return false;
         }
