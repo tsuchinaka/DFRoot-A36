@@ -1,6 +1,6 @@
 #!/bin/sh
 
-set -eux
+set -eu
 if [ -e app/keystore.jks ]; then
     echo Already exist.
 else

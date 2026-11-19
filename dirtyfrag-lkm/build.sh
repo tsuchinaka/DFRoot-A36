@@ -1,8 +1,10 @@
 #!/bin/sh
 
-set -eux
+set -eu
 
 cd "$(dirname "$0")"
+
+IMAGE="${DDK_IMAGE_PREFIX:-ghcr.io/ylarod/ddk-min}"
 
 for version in \
     android12-5.10 \
@@ -14,7 +16,7 @@ for version in \
     android16-6.12 \
     android17-6.18 \
 ; do
-    docker run -ti -v "$(pwd)":/src -w /src --user "$(id -u)" ghcr.io/ylarod/ddk-min:"$version" make $*
+    docker run -ti -v "$(pwd)":/src -w /src --user "$(id -u)" "$IMAGE:$version" make $*
     cp dirtyfrag.ko dirtyfrag-"$version".ko
     cp dirtyfrag.ko dirtyfrag-unstripped-"$version".ko
     # Size diet: this ko is written through the exploit page by page.

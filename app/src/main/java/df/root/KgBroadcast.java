@@ -72,7 +72,7 @@ final class KgBroadcast {
             }
             int state = Probes.intProp("knox.kg.state", -1);
             Log.i(TAG, "[kg-broadcast] state=" + state
-                    + (enrolled(state) ? " (already enrolled)" : ""));
+                    + (TextParse.enrolled(state) ? " (already enrolled)" : ""));
             for (String[] nudge : NUDGES) {
                 if (!enabled(nudge[0], state)) {
                     Log.i(TAG, "[kg-broadcast] " + nudge[0] + " skipped");
@@ -95,7 +95,7 @@ final class KgBroadcast {
         int state = Probes.intProp("knox.kg.state", -1);
         StringBuilder out = new StringBuilder();
         out.append("[kg-broadcast] state=").append(state)
-                .append(enrolled(state) ? " (already enrolled)" : "").append('\n');
+                .append(TextParse.enrolled(state) ? " (already enrolled)" : "").append('\n');
         for (String[] nudge : NUDGES) {
             String label = nudge[0];
             if (!enabled(label, state)) {
@@ -129,7 +129,7 @@ final class KgBroadcast {
         if (!FULL_NUDGES) {
             return false;
         }
-        if (START.equals(label) && enrolled(state)) {
+        if (START.equals(label) && TextParse.enrolled(state)) {
             return false;
         }
         return true;
@@ -147,11 +147,6 @@ final class KgBroadcast {
             Log.w(TAG, "kg broadcast " + action + ": " + t);
             return "blocked";
         }
-    }
-
-    /** 0=Prenormal, 1=Checking, 2=Active, 3=Locked, 4=Completed, 5=Error. */
-    private static boolean enrolled(int state) {
-        return state == 2 || state == 3 || state == 4;
     }
 
     private static boolean alreadyNudged(Context ctx) {

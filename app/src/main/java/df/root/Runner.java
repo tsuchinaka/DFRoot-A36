@@ -243,7 +243,7 @@ final class Runner {
             ta = runAndRead(20L, "su", "-c", KG_STATE);
         }
         String prop = Probes.prop("knox.kg.state");
-        int state = halState >= 0 ? halState : taState(ta);
+        int state = halState >= 0 ? halState : TextParse.taState(ta);
         reporter.report("[kg] hal=" + oneLine(hal)
                 + " unlock=" + oneLine(unlock)
                 + " state=" + state
@@ -297,23 +297,6 @@ final class Runner {
         }
         String flat = value.trim().replace('\n', ' ');
         return flat.length() > 120 ? flat.substring(0, 120) + "..." : flat;
-    }
-
-    private static int taState(String parcel) {
-        if (parcel == null) {
-            return -1;
-        }
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("([0-9a-fA-F]{8})\\s+([0-9a-fA-F]{8})")
-                .matcher(parcel);
-        if (!m.find()) {
-            return -1;
-        }
-        try {
-            return (int) Long.parseLong(m.group(2), 16);
-        } catch (Throwable t) {
-            return -1;
-        }
     }
 
     private static String runAndRead(long timeoutSeconds, String... argv) {

@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Signing values come from Gradle properties or env; the historical local
+// defaults keep sideload builds working without a secret store.
+fun secret(prop: String, env: String, fallback: String): String =
+    (project.findProperty(prop) as String?) ?: System.getenv(env) ?: fallback
+
 android {
     namespace = "df.root"
     compileSdk = 37
@@ -12,8 +17,8 @@ android {
         applicationId = "df.root"
         minSdk = 33
         targetSdk = 36
-        versionCode = 27
-        versionName = "3.10.0-ui"
+        versionCode = 28
+        versionName = "3.10.1-ci"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -23,9 +28,9 @@ android {
     signingConfigs {
         create("keystore") {
             storeFile = file("keystore.jks")
-            storePassword = "android"
-            keyAlias = "dfroot"
-            keyPassword = "android"
+            storePassword = secret("dfroot.storePassword", "DFROOT_STORE_PASSWORD", "android")
+            keyAlias = secret("dfroot.keyAlias", "DFROOT_KEY_ALIAS", "dfroot")
+            keyPassword = secret("dfroot.keyPassword", "DFROOT_KEY_PASSWORD", "android")
         }
     }
 
@@ -54,7 +59,12 @@ android {
     }
 
     lint {
-        checkReleaseBuilds = false
+        checkReleaseBuilds = true
+        abortOnError = false
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     externalNativeBuild {
@@ -92,4 +102,5 @@ dependencies {
     implementation("com.google.android.material:material:1.14.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }

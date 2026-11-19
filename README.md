@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `3.10.0-ui` (`versionCode 27`).
+Current internal build: `3.10.1-ci` (`versionCode 28`).
 
 ## Tested on
 
@@ -167,9 +167,9 @@ build does not need to rebuild it.
 
 - Galaxy A36 5G (`SM-A366E`), arm64, Android with the vulnerable kernel.
 - KernelSU Manager installed first: https://github.com/tiann/KernelSU/releases
-- To build: JDK 17, Android SDK with Platform 37 and Build Tools 37, and NDK
-  `29.0.14206865` (set in `app/build.gradle.kts`). CMake and Ninja come with
-  the NDK.
+- To build: JDK 21 (the Gradle toolchain pins 21), Android SDK with
+  Platform 37 and Build Tools 37, and NDK `29.0.14206865` (set in
+  `app/build.gradle.kts`). CMake and Ninja come with the NDK.
 
 ## Building
 
@@ -184,6 +184,23 @@ Or use the wrapper script, which also drops `dirtyfrag.apk` next to the project:
 ```sh
 ./build.sh
 ```
+
+Tests and artifact checks:
+
+```sh
+./gradlew :app:test
+./tools/check-build.sh
+```
+
+Signing values can come from Gradle properties (`dfroot.storePassword`,
+`dfroot.keyAlias`, `dfroot.keyPassword`) or the environment
+(`DFROOT_STORE_PASSWORD`, `DFROOT_KEY_ALIAS`, `DFROOT_KEY_PASSWORD`). The
+local fallback is the historical `android`/`dfroot` pair so sideload builds
+keep working.
+
+CI runs tests, the release build and the artifact checks on every push
+(`.github/workflows/ci.yml`); tags `v*` publish the APK
+(`.github/workflows/release.yml`).
 
 Install on a connected device:
 
@@ -254,9 +271,13 @@ same `Runner.claim` prevents concurrent runs.
 ## Project layout
 
 ```
-app/src/main/java/df/root/     MainActivity (JNI host), DFRootApp, HomeScreen,
-                               LogScreen, AboutScreen, DfrootViewModel, Runner,
-                               RootProbe, RootRecord, BootReceiver, RootReceiver
+app/src/main/java/df/root/     MainActivity, Native (JNI host), DFRootApp,
+                               HomeScreen, LogScreen, AboutScreen, DfrootViewModel,
+                               Runner, BootChain, KeepService, KeepReceiver,
+                               PostRoot, KgBroadcast, KgWatchdog, TargetGuard,
+                               Diagnostics, Probes, BootId, AssetPrep, TextParse,
+                               RootProbe, RootRecord, BootReceiver, RootReceiver,
+                               CrashLog (in RootApp)
 app/src/main/jni/              exp.c, libc.S, libcxx.S, elf_parser.c, ko/*
 app/src/main/assets/ksud       KernelSU userspace binary
 app/src/main/assets/kgta_helper  arm64 KG vendor-HAL helper
@@ -287,6 +308,14 @@ rebuilt the UI.
   https://github.com/meticha/material-3-expressive-catalog
 
 A36 port and Compose UI: @tsuchinaka
+
+## License
+
+The A36 port, the Compose UI and the persistence/service code are MIT (see
+`LICENSE`). Bundled binaries and upstream sources keep their own licenses:
+`NOTICE.md` lists them, including the patched KernelSU userspace build, the
+GPL-2.0 dirtyfrag module and its DDK image, and the BSD header in
+`app/src/main/jni/include.inc`.
 
 ## Final warning
 
