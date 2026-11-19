@@ -8,3 +8,4 @@ local.properties
 *.iml
 .idea/
 *.hprof
+app/src/main/jni/splicehelper

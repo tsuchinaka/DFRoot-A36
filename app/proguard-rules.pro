@@ -1,5 +1,5 @@
 # Keep the JNI entry point: the native library resolves it by exact name.
--keep class df.root.MainActivity { *; }
+-keep class df.root.Native { *; }
 -keepclasseswithmembernames class * { native <methods>; }
 
 # Keep the exploit bridge classes reached from Kotlin/JNI.

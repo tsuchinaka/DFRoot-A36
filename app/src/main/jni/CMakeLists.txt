@@ -2,11 +2,11 @@ cmake_minimum_required(VERSION 3.22)
 project(exp)
 enable_language(ASM)
 
-include_directories("${CMAKE_SOURCE_DIR}")
+include_directories("${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
 set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS}")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${C_FLAGS} -Wall -Wextra -fno-stack-protector -fomit-frame-pointer")
 
-set(SPLICEHELPER "${CMAKE_CURRENT_SOURCE_DIR}/splicehelper")
+set(SPLICEHELPER "${CMAKE_CURRENT_BINARY_DIR}/splicehelper")
 add_custom_command(
     OUTPUT "${SPLICEHELPER}"
     COMMAND "${CMAKE_C_COMPILER}"
@@ -33,7 +33,7 @@ ${CMAKE_SOURCE_DIR}/ko/dirtyfrag-android14-6.1.ko;\
 ${CMAKE_SOURCE_DIR}/ko/dirtyfrag-android15-6.6.ko;\
 ${CMAKE_SOURCE_DIR}/ko/dirtyfrag-android16-6.12.ko;\
 ${CMAKE_SOURCE_DIR}/ko/dirtyfrag-android17-6.18.ko;\
-${CMAKE_SOURCE_DIR}/splicehelper")
+${SPLICEHELPER}")
 
 target_link_libraries(exp log)
 target_link_options(exp PRIVATE -Wl,-z,max-page-size=16384)

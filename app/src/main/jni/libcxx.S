@@ -26,6 +26,7 @@ exe_path:
     .balign 4
 
 libcxx_start:
+    bti c
     stp x0, x1, [sp, #-16]!
     stp x2, x3, [sp, #-16]!
     stp x4, x5, [sp, #-16]!

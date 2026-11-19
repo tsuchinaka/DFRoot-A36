@@ -254,4 +254,6 @@
     mov x3, xzr
     mov x8, #SYS_openat
     svc 0
+    mov x8, #SYS_close
+    svc 0
 .endm

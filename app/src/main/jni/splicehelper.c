@@ -5,18 +5,22 @@
 #include <unistd.h>
 
 // Build with:
-// /home/brian/android/ide/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang \
+// $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang \
 //   splicehelper.c -o splicehelper -nodefaultlibs -nostartfiles -ffreestanding -static && \
-// /home/brian/android/ide/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip splicehelper
+// $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip splicehelper
 
 // argv[0] = program name
 // argv[1] = file offset (decimal string)
 // argv[2] = file path
-// argv[3] = optional "r" — read mode: write 16 bytes of file content to fd 0 (OUT_FD)
-//           if absent — splice mode: splice 16 bytes of file page into fd 1 (PIPE_FD)
+// argv[3] = "r"  read 16 bytes and write them to fd 0
+//           "rb" read 4096 bytes and write them to fd 0
+//           absent: splice 16 bytes of the file page into fd 1
 
 #define OUT_FD  0
 #define PIPE_FD 1
+#define BULK_SZ 4096
+
+static unsigned char rbuf[BULK_SZ];
 
 __attribute__((naked)) static long mysyscall1(unsigned long arg0, unsigned long nr) {
     asm volatile("mov x8, x1\nsvc 0\nret\n":::"x8");
@@ -48,6 +52,11 @@ void start_c(void *argblock) {
     int argc = (int)*(long *)argblock;
     char **argv = (char **)argblock + 1;
 
+    /* argv[1] and argv[2] are mandatory; a bare exec used to read past them. */
+    if (argc < 3 || argv[1] == NULL || argv[2] == NULL) {
+        mysyscall1(1, __NR_exit_group);
+    }
+
     off64_t off = (off64_t)parse_int(argv[1]);
     char *target = argv[2];
     char *mode = (argc >= 4) ? argv[3] : (char *)0;
@@ -57,19 +66,43 @@ void start_c(void *argblock) {
         (unsigned long)target,
         (unsigned long)O_RDONLY,
         __NR_openat);
-    if (file_fd < 0)
+    if (file_fd < 0) {
         mysyscall1(1, __NR_exit_group);
+    }
 
     if (mode && streq(mode, "r")) {
         /* Read mode: lseek to offset, read 16 bytes, write to OUT_FD */
         /* Exit codes: 0=ok, 1=read<16, 2=write<16 */
         mysyscall3((unsigned long)file_fd, (unsigned long)off, SEEK_SET, __NR_lseek);
-        unsigned char buf[16];
-        long n = mysyscall3((unsigned long)file_fd, (unsigned long)buf, 16, __NR_read);
-        if (n != 16)
+        long n = mysyscall3((unsigned long)file_fd, (unsigned long)rbuf, 16, __NR_read);
+        if (n != 16) {
             mysyscall1(1, __NR_exit_group);
-        long w = mysyscall3(OUT_FD, (unsigned long)buf, 16, __NR_write);
+        }
+        long w = mysyscall3(OUT_FD, (unsigned long)rbuf, 16, __NR_write);
         mysyscall1((unsigned long)(w == 16 ? 0 : 2), __NR_exit_group);
+    }
+
+    if (mode && streq(mode, "rb")) {
+        /* Bulk read: one exec per 4 KB chunk instead of one per 16 bytes. */
+        mysyscall3((unsigned long)file_fd, (unsigned long)off, SEEK_SET, __NR_lseek);
+        unsigned long total = 0;
+        while (total < BULK_SZ) {
+            long n = mysyscall3((unsigned long)file_fd,
+                                (unsigned long)(rbuf + total),
+                                BULK_SZ - total, __NR_read);
+            if (n <= 0) break;
+            total += (unsigned long)n;
+        }
+        unsigned long done = 0;
+        while (done < total) {
+            long w = mysyscall3(OUT_FD, (unsigned long)(rbuf + done),
+                                total - done, __NR_write);
+            if (w <= 0) {
+                mysyscall1(2, __NR_exit_group);
+            }
+            done += (unsigned long)w;
+        }
+        mysyscall1((unsigned long)(total == BULK_SZ ? 0 : 1), __NR_exit_group);
     }
 
     /* Splice mode: splice 16-byte page into PIPE_FD */
