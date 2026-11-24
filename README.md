@@ -20,10 +20,18 @@ Knox Guard unlock after the root chain on this device.
 
 Current internal build: `4.1.0-perf` (`versionCode 30`).
 
+Latest release: [`v4.1.0-perf`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.1.0-perf),
+asset `dfroot-4.1.0-perf.apk`, SHA-256
+`cd07f6c09b7e5fdee2601c6332fbfc2e584ddb1c1a3ce864c0f695ee760e790d`.
+That APK is re-signed with the v4.0 key so it updates in place. The build and
+tests pass in CI, but this revision has not been validated on hardware.
+
 ## Tested on
 
-This is the exact setup it was built and confirmed working against. Other
-kernels and firmware may need a different `dirtyfrag` module.
+This is the exact setup the chain was built for. The v4.0 line was exercised
+on this hardware; v4.1.0-perf only passed compile, unit tests, packaging and
+artifact checks. Other kernels and firmware may need a different
+`dirtyfrag` module.
 
 - Device: Samsung Galaxy A36 5G (`SM-A366E`), Snapdragon 6 Gen 3, arm64
 - Android: 16 (SDK 36)
@@ -36,18 +44,19 @@ kernels and firmware may need a different `dirtyfrag` module.
 The bug lets an unprivileged app corrupt the kernel page cache of a mapped
 shared library without write access. The chain uses that to patch small stubs
 into `libc.so` and `libc++.so`, gets code running as `root`, and then loads the
-bundled `dirtyfrag.ko` module. From there the app forks a root shell, stages
-`ksud`, and KernelSU takes over and installs itself. Once KernelSU is live, the
-app flips SELinux back to enforcing and applies a mount overlay so the modules
-are visible everywhere.
+bundled `dirtyfrag.ko` module. Stage 2 stages `ksud` and execs it through a
+bind-mounted `/system/bin/logcat`; KernelSU takes over and installs itself.
+The app then applies an optional mount overlay and the Knox Guard unlock.
+SELinux enforcement restoration and the actual KernelSU installation live in
+the opaque `ksud` binary, not in this source tree.
 
 The pieces are:
 
 1. App builds an IPsec transform with `IpSecManager` (`Runner.run`).
 2. Native code (`app/src/main/jni`) rides the AES-CBC splice primitive to patch
-   the libraries and run the root shell.
-3. `dirtyfrag.ko` goes in via `/vendor/bin/modprobe`, which is why the shell
-   needs an empty `PATH` and absolute paths everywhere.
+   the libraries and start the root stage.
+3. `dirtyfrag.ko` goes in via `/vendor/bin/modprobe`. Stage 2 execs `ksud` with
+   an empty environment, hence the absolute paths.
 4. `ksud` runs, KernelSU loads, and `Runner.applyOverlay` does
    `su --mount-master -c 'sh /data/dfroot/apply.sh'` if that script exists.
    It is optional: nothing in this tree creates it, and KernelSU already mounts
@@ -114,8 +123,8 @@ build does not need to rebuild it.
 - Target gate: every entry point (UI, boot chain, adb) refuses to run unless
   the device is `a36xq`, the fingerprint says A36 and the kernel is an
   `android15` 6.6 build. The module image also requires an exact
-  android-release + kernel match plus a vermagic sanity check against the
-  running kernel; on anything else the app says `UNSUPPORTED` instead of
+  android-release + kernel entry in the embedded KO table and a vermagic
+  major.minor check; on anything else the app says `UNSUPPORTED` instead of
   patching memory it does not understand.
 - One-tap root from the app, or a headless adb broadcast.
 - Auto jailbreak on boot and unlock. `BootReceiver` only enqueues; the pass
@@ -187,7 +196,7 @@ For a fast internal signed build without R8:
 ./gradlew :app:assembleRelease -Pdfroot.minify=false
 ```
 
-Or use the wrapper script, which also drops `dirtyfrag.apk` next to the project:
+Or use the wrapper script, which also drops `dfroot.apk` next to the project:
 
 ```sh
 ./build.sh
@@ -206,18 +215,30 @@ Signing values can come from Gradle properties (`dfroot.storePassword`,
 local fallback is the historical `android`/`dfroot` pair so sideload builds
 keep working.
 
-CI runs tests, the release build and the artifact checks on every push
-(`.github/workflows/ci.yml`); tags `v*` publish the APK
-(`.github/workflows/release.yml`).
+CI runs tests, the release build, the artifact checks and uploads the APK as a
+downloadable artifact on every push, pull request or manual dispatch
+(`.github/workflows/ci.yml`). Tags still trigger the older release workflow,
+which uses the CI keystore; configure `DFROOT_KEYSTORE_B64`,
+`DFROOT_STORE_PASSWORD`, `DFROOT_KEY_ALIAS` and `DFROOT_KEY_PASSWORD` before
+using it, otherwise its signature will not match previous releases. The
+v4.1.0-perf release was published manually from the locally re-signed APK.
 
-Install on a connected device:
+Install a local release build:
 
 ```sh
 adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-The release build runs R8 and resource shrinking. The JNI entry point is kept by
-name in `app/proguard-rules.pro`, so do not strip that file.
+Install the published build:
+
+```sh
+adb install -r dfroot-4.1.0-perf.apk
+```
+
+The default release build runs R8 and resource shrinking. The
+`-Pdfroot.minify=false` build skips both for faster internal packaging. The JNI
+entry point is kept by name in `app/proguard-rules.pro`, so do not strip that
+file.
 
 ## Using it
 
@@ -261,11 +282,14 @@ same `Runner.claim` prevents concurrent runs.
 ## Notes and gotchas
 
 - Never `rmmod kernelsu`. It panics the kernel and takes USB down with it.
-- The root shell has an empty `PATH`. Always use absolute paths.
-- Return codes: `0` success, `1` ksud failed, `2` watchdog inconclusive (the
-  chain may still have worked — the app waits for `su` when the stage-1 mutex
-  exists), `3` patching failed, `4` module load failed (KMI/vermagic),
-  `5` namespace/mount failed, `6` ksud staging failed.
+- The stage-2 exec runs with an empty environment. Always use absolute paths.
+- Return codes: `0` ksud was launched and the exec status pipe reached EOF, `1`
+  the ksud `execve` failed, `2` watchdog inconclusive, `3` preflight/patching
+  failed, `4` `finit_module` failed (KMI/vermagic/signature), `5`
+  namespace/mount failed, `6` ksud staging failed. `0` does not prove that
+  KernelSU installed; Java still waits for `su -c id`.
+- Manual reruns can see stale `/dev/dfm*` markers from an earlier pass. The
+  boot chain avoids this through `/dev/df`, but the UI Run again path does not.
 - The stage 1 mutex lives at `/dev/df`. If a run dies halfway it stays behind
   and later passes wait for `su` instead of re-exploting; only a reboot clears
   it.
@@ -286,7 +310,7 @@ app/src/main/java/df/root/     MainActivity, Native (JNI host), DFRootApp,
                                PostRoot, KgBroadcast, KgWatchdog, TargetGuard,
                                Diagnostics, Probes, BootId, AssetPrep, TextParse,
                                RootProbe, RootRecord, BootReceiver, RootReceiver,
-                               CrashLog (in RootApp)
+                               LogFiles, Stats, CrashLog (in RootApp)
 app/src/main/jni/              exp.c, libc.S, libcxx.S, elf_parser.c, ko/*
 app/src/main/assets/ksud       KernelSU userspace binary
 app/src/main/assets/kgta_helper  arm64 KG vendor-HAL helper
