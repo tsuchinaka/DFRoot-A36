@@ -1,205 +1,87 @@
 # DFRoot A36
 
 > [!WARNING]
-> **Internal test code. Not recommended for use.**
-> This is research code for one test device (Samsung Galaxy A36 5G, SM-A366E).
-> It patches kernel memory, writes a kernel module, trips Knox, can brick the
-> phone, void the warranty and wipe data. It is published only because I use it
-> for my own internal tests and because the chain is worth reading. Do not
-> install it on a daily driver, on a device you do not own, or on hardware you
-> cannot afford to lose. No support, no warranty.
+> Internal research code for one test device. It patches kernel memory, writes a
+> kernel module, trips Knox, can brick the phone and void the warranty. Use it
+> only on hardware you own and can afford to lose.
 
-Temporary root for the Samsung Galaxy A36 5G (`SM-A366E`), using the DirtyFrag
-bug (`CVE-2026-43284`). You open the app, tap one button, and `su` starts
-answering `uid=0` for the KernelSU install it just dropped. No reboot, no cable.
-The same chain can also be started from an adb shell.
+Temporary KernelSU root for the Samsung Galaxy A36 5G (`SM-A366E`) using
+DirtyFrag (`CVE-2026-43284`). Tap one button, `su` starts working, no reboot and
+no cable. It can also root on boot/unlock and re-apply the Knox Guard unlock.
 
-This is a port and repackaging of the DFRoot app for the A36, with the UI
-rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
-Knox Guard unlock after the root chain on this device.
-
-Current internal build: `4.1.0-perf` (`versionCode 30`).
-
-Latest release: [`v4.1.0-perf`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.1.0-perf),
-asset `dfroot-4.1.0-perf.apk`, SHA-256
-`cd07f6c09b7e5fdee2601c6332fbfc2e584ddb1c1a3ce864c0f695ee760e790d`.
-That APK is re-signed with the v4.0 key so it updates in place. The build and
-tests pass in CI, but this revision has not been validated on hardware.
-
-## Tested on
-
-This is the exact setup the chain was built for. The v4.0 line was exercised
-on this hardware; v4.1.0-perf only passed compile, unit tests, packaging and
-artifact checks. Other kernels and firmware may need a different
-`dirtyfrag` module.
-
-- Device: Samsung Galaxy A36 5G (`SM-A366E`), Snapdragon 6 Gen 3, arm64
-- Android: 16 (SDK 36)
-- Kernel: `6.6.98-android15-8-33419078-abogkiA366EXXSBCZG3-4k`
-- Firmware: `A366EXXSBCZG3`
-- Module used: `dirtyfrag-android15-6.6.ko`
-
-## What it actually does
-
-The bug lets an unprivileged app corrupt the kernel page cache of a mapped
-shared library without write access. The chain uses that to patch small stubs
-into `libc.so` and `libc++.so`, gets code running as `root`, and then loads the
-bundled `dirtyfrag.ko` module. Stage 2 stages `ksud` and execs it through a
-bind-mounted `/system/bin/logcat`; KernelSU takes over and installs itself.
-The app then applies an optional mount overlay and the Knox Guard unlock.
-SELinux enforcement restoration and the actual KernelSU installation live in
-the opaque `ksud` binary, not in this source tree.
-
-The pieces are:
-
-1. App builds an IPsec transform with `IpSecManager` (`Runner.run`).
-2. Native code (`app/src/main/jni`) rides the AES-CBC splice primitive to patch
-   the libraries and start the root stage.
-3. `dirtyfrag.ko` goes in via `/vendor/bin/modprobe`. Stage 2 execs `ksud` with
-   an empty environment, hence the absolute paths.
-4. `ksud` runs, KernelSU loads, and `Runner.applyOverlay` does
-   `su --mount-master -c 'sh /data/dfroot/apply.sh'` if that script exists.
-   It is optional: nothing in this tree creates it, and KernelSU already mounts
-   modules in the global namespace, so a missing file is skipped, not an error.
-5. `Runner.applyKgFix` re-applies the Knox Guard unlock after the overlay.
-
-## Knox Guard handling
-
-The TA is authoritative. `knox.kg.state` is only a mirror, and its value is a
-state NAME (`Prenormal`, `Checking`, `Active`, `Locked`, `Completed`, `Error`);
-the app parses both names and integers.
-
-- Flow: read the state first. Only `Active(2)` and `Locked(3)` are unlockable;
-  `Prenormal(0)`, `Checking(1)` and `Error(5)` are skipped, and `Completed(4)`
-  still gets the idempotent lockscreen unbind but no TA unlock.
-- `kgta_helper unlock` prints `pre_state`, the unlock attempt and `post_state`
-  in one run, and gates itself: outside 2/3 it does not call the TA, so a
-  prenormal or checking device cannot be forced into an invalid transition.
-- The vendor HAL unlock changes the TA. The system service transaction 35
-  runs as the kgclient uid (resolved through `PackageManager`, fallback 10085)
-  for the lockscreen unbind and the property update. If the nested `su <uid>`
-  is unavailable, the app retries the service call directly.
-- `MANUAL_UNLOCK` is client-side cleanup only: it clears the client's local
-  lock prefs, sends `KNOXGUARD_UNLOCKED` and reports `MANUAL_UNLOCK` to the
-  server. It is sent only after the TA reports a real unlock, never before
-  root.
-- TA errors are mapped: `513` RPMB unavailable, `519` HMAC mismatch, `-1006`
-  init failed. 513/519 park KG until the next reboot instead of retrying.
-- The keep worker re-applies the unlock if the mirror returns Active/Locked,
-  with a 10 minute cooldown stored per boot id.
-- The TA unlock may write the KG OTP fuse (`write fuse success ... state`);
-  treat it as one-way and test on a sacrificial unit. The unlock is per boot,
-  like root: the bootloader enforces before Android starts.
-
-The helper can be rebuilt with:
-
-```sh
-./tools/build-kgta-helper.sh
-```
-
-The source and script are in `tools/`; the asset is committed so the normal app
-build does not need to rebuild it.
-
-## UI
-
-- Home, Log and About live behind a `FloatingActionButtonMenu` at the bottom
-  end. There is no bottom navigation bar and no reserved band: content runs
-  under the FAB, with scroll clearance inside each screen.
-- Home shows LIVE / OFFLINE, the jailbreak button, and one list for kernel,
-  device, `su`, the manager, the last pass, the auto-root switch and the
-  Knox Guard unlock switch with the live `knox.kg.state`.
-- Log keeps `run.log` across runs, with search, a follow toggle, clear, copy,
-  export and a diagnostics bundle (run.log + boot.log + probe + properties +
-  versions + KG state). File imports and trimming stay off the main thread,
-  logs rotate at 512 KB, and the list renders lazily.
-- Back from Log or About returns to Home before leaving the app.
-- About is the version, two links and the credit list.
-- English and Spanish resources; the battery optimization prompt is asked
-  when auto-root is enabled, not on every launch.
-- Material 3 Expressive theming, dynamic color on Android 12 and up.
-
-## Features
-
-- Target gate: every entry point (UI, boot chain, adb) refuses to run unless
-  the device is `a36xq`, the fingerprint says A36 and the kernel is an
-  `android15` 6.6 build. The module image also requires an exact
-  android-release + kernel entry in the embedded KO table and a vermagic
-  major.minor check; on anything else the app says `UNSUPPORTED` instead of
-  patching memory it does not understand.
-- One-tap root from the app, or a headless adb broadcast.
-- Auto jailbreak on boot and unlock. `BootReceiver` only enqueues; the pass
-  runs on a single worker inside the foreground service, behind a cheap gate
-  (`crash_dump64` on apex, `libbinderdebug.so` on vendor, `sys.boot_completed`)
-  so no attempts are burned before the system is ready. Retries follow a
-  15/30/45/60 s ladder while the boot settles and cap at 90 s afterwards, and
-  the overlay wait only happens when the kernel can actually be patched
-  (`rc == 0` or the `/dev/df` mutex), so a failed pass costs seconds, not
-  three minutes of su polls. Wakelocks are held per attempt, and the pass log
-  is buffered in memory and flushed once at the end.
-- A foreground service stays only while auto-root is enabled or root is live.
-  Its keep worker adapts: 30 s without root, 120 s with a healthy root side,
-  and it requests a chain pass the moment a live root is observed to be gone.
-  With auto-root off and no root it stops and leaves no keep alarm behind.
-  The UI probes only while visible, reuses a fresh supervisor heartbeat for
-  five minutes, and caches manager and KG state between slow refreshes.
-- The post-root scripts run from one root daemon per boot. KernelSU starts it
-  from `service.d` at boot; when the app finds root without it, it launches it
-  once and pays a single `su`. The daemon writes a world-readable heartbeat
-  every 30 s, so the app verifies the root side without any `su` call while the
-  heartbeat is fresh, restarts this app if Android kills it, exits on its own
-  when the boot id changes, and stamps its one-shot work per boot. It only
-  supervises what this install owns: `/data/dfroot/apply.sh`,
-  `/data/dfroot/*.sh` and `/data/dfroot/keep.d/*.sh` (opt-in). KernelSU's own
-  `service.d`, `post-fs-data.d`, `post-mount.d` and module scripts are left to
-  KernelSU — running them twice breaks modules.
-  A failed one-shot backs off five minutes, the daemon scripts are staged in
-  device-protected storage first, and the keep alarm relaxes from 3 to 10
-  minutes once the root side is healthy.
-- `ksud` and `kgta_helper` are staged once per app version into both storages,
-  so the exploit window does not pay the extraction I/O.
-- The native side verifies every patched chunk by reading it back (one retry),
-  keeps a 4 KB chunk of vendor page references in one pipe and sends every
-  16-byte block without another crash_dump fork, reuses one datagram pipe per
-  chunk, rejects out-of-range hook branches, validates the JNI inputs, and
-  checks `finit_module` and every ksud copy write. Native emits helper, pipe,
-  packet, byte and elapsed-time counters at the end of each pass. The sender
-  socket is bound once in Java and handed to native as an fd, removing the
-  port re-bind race.
-- State-first Knox Guard unlock: TA unlock in Active/Locked only, kgclient-uid
-  service call for the lockscreen unbind and property, cleanup broadcast only
-  after a real unlock, and a per-boot watchdog with RPMB error parking.
-- Floating FAB menu for Home/Log/About.
-- Log in the app and under logcat tag `dfroot`; `run.log` in the app's private
-  storage.
-- KernelSU is used as the manager. The app is registered as the debug manager
-  so it can write the allowlist without already being root.
+Current release: [`v4.1.0-perf`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.1.0-perf)
+- APK: `dfroot-4.1.0-perf.apk`
+- Version: `4.1.0-perf` (`versionCode 30`), arm64 only
+- SHA-256: `cd07f6c09b7e5fdee2601c6332fbfc2e584ddb1c1a3ce864c0f695ee760e790d`
+- Signed with the v4.0 key, so it updates in place
+- CI build/tests passed; this revision was not tested on hardware
 
 ## Requirements
 
-- Galaxy A36 5G (`SM-A366E`), arm64, Android with the vulnerable kernel.
-- KernelSU Manager installed first: https://github.com/tiann/KernelSU/releases
-- To build: JDK 21 (the Gradle toolchain pins 21), Android SDK with
-  Platform 37 and Build Tools 37, and NDK `29.0.14206865` (set in
-  `app/build.gradle.kts`). CMake and Ninja come with the NDK.
+- Galaxy A36 5G (`SM-A366E`, `a36xq`)
+- Kernel `6.6.98-android15-8-33419078-abogkiA366EXXSBCZG3-4k`
+- Firmware `A366EXXSBCZG3`
+- KernelSU Manager already installed
 
-## Building
+Other firmware or kernels are refused. The KO table is exact per
+Android release and kernel major.minor.
+
+## Install
 
 ```sh
-./create-keystore.sh        # only if app/keystore.jks does not exist yet
-./gradlew assembleRelease
-# output: app/build/outputs/apk/release/app-release.apk
+adb install -r dfroot-4.1.0-perf.apk
 ```
 
-For a fast internal signed build without R8:
+If the old install uses a different signing key, uninstall it first. That wipes
+the app's private data.
+
+## Use
+
+1. Open DFRoot.
+2. Tap **Jailbreak** and wait for the log to finish.
+3. `su -c id` should return `uid=0`.
+4. If KernelSU refuses the app, add DFRoot to its superuser list.
+5. Enable **Auto-jailbreak on boot** if you want boot/unlock retries and the
+   keep service.
+
+The app shows `LIVE` only when `su` actually answers. KernelSU still controls
+the allowlist.
+
+ADB trigger:
+
+```sh
+adb shell am broadcast -a df.root.action.ROOT -n df.root/.RootReceiver --receiver-foreground
+adb logcat -s dfroot
+```
+
+The receiver requires `android.permission.DUMP`; ordinary apps cannot call it.
+
+## What changed in 4.1
+
+- Native patching batches 4 KB page-cache chunks instead of forking
+  `crash_dump64` for every 16-byte block.
+- Stage 2 reports ksud exec success/failure through a pipe instead of a fixed
+  wait.
+- JNI validates keys, ICV length, port, socket type and paths.
+- UI probes only while visible and reuses a fresh root heartbeat.
+- The keep service stops when auto-root is off and root is dead.
+- Logs rotate at 512 KB and render lazily.
+- Native and Java metrics are included in diagnostics.
+
+## Build
+
+Requirements: JDK 21, Android SDK Platform 37, Build Tools 37, NDK
+`29.0.14206865` and CMake 3.22.1.
+
+```sh
+./create-keystore.sh
+./gradlew :app:assembleRelease
+```
+
+Fast internal build without R8 or resource shrinking:
 
 ```sh
 ./gradlew :app:assembleRelease -Pdfroot.minify=false
-```
-
-Or use the wrapper script, which also drops `dfroot.apk` next to the project:
-
-```sh
-./build.sh
 ```
 
 Tests and artifact checks:
@@ -209,150 +91,50 @@ Tests and artifact checks:
 ./tools/check-build.sh
 ```
 
-Signing values can come from Gradle properties (`dfroot.storePassword`,
-`dfroot.keyAlias`, `dfroot.keyPassword`) or the environment
-(`DFROOT_STORE_PASSWORD`, `DFROOT_KEY_ALIAS`, `DFROOT_KEY_PASSWORD`). The
-local fallback is the historical `android`/`dfroot` pair so sideload builds
-keep working.
+CI runs the same steps on push, pull request or manual dispatch and uploads the
+APK as an artifact. Tag releases need `DFROOT_KEYSTORE_B64`,
+`DFROOT_STORE_PASSWORD`, `DFROOT_KEY_ALIAS` and `DFROOT_KEY_PASSWORD` in
+repository secrets. Without them, publish the locally signed APK manually.
 
-CI runs tests, the release build, the artifact checks and uploads the APK as a
-downloadable artifact on every push, pull request or manual dispatch
-(`.github/workflows/ci.yml`). Tags still trigger the older release workflow,
-which uses the CI keystore; configure `DFROOT_KEYSTORE_B64`,
-`DFROOT_STORE_PASSWORD`, `DFROOT_KEY_ALIAS` and `DFROOT_KEY_PASSWORD` before
-using it, otherwise its signature will not match previous releases. The
-v4.1.0-perf release was published manually from the locally re-signed APK.
+## Notes
 
-Install a local release build:
-
-```sh
-adb install -r app/build/outputs/apk/release/app-release.apk
-```
-
-Install the published build:
-
-```sh
-adb install -r dfroot-4.1.0-perf.apk
-```
-
-The default release build runs R8 and resource shrinking. The
-`-Pdfroot.minify=false` build skips both for faster internal packaging. The JNI
-entry point is kept by name in `app/proguard-rules.pro`, so do not strip that
-file.
-
-## Using it
-
-Open the app and tap Jailbreak (or Run again). Watch the Log tab. When it
-finishes, `su -c id` should return `uid=0`. If KernelSU does not grant the app,
-the status card says so and tells you to add DFRoot to the KernelSU superuser
-list. The app shows `LIVE` only when `su` actually answers.
-
-Auto jailbreak on boot and unlock is the switch on Home. It enables the boot
-receiver and starts the keep service; turning it off stops the service when
-no root is live. The receiver fires on locked boot, boot completed, credential
-unlock and every lockscreen unlock, refuses to run on a device that does not
-pass the target gate, skips the exploit when su is already live or the
-/dev/df mutex is held, waits for the overlay only when the kernel can
-actually be patched, and retries on a 15/30/45/60 s ladder while the boot
-settles (90 s cap afterwards). Boot attempts land in device-protected
-boot.log and are mirrored into run.log once credential storage unlocks, so
-the Log tab shows them.
-
-## ADB trigger
-
-The same chain can be started from an adb shell without tapping the UI:
-
-```sh
-adb shell am broadcast -a df.root.action.ROOT -n df.root/.RootReceiver --receiver-foreground
-```
-
-`RootReceiver` is exported but requires `android.permission.DUMP`; the adb
-shell holds it, ordinary apps do not. The receiver runs `Runner.run` in a
-background thread and logs under logcat tag `dfroot`:
-
-```sh
-adb logcat -s dfroot
-adb shell su -c id
-```
-
-The `--receiver-foreground` flag gives the broadcast higher priority. If the
-system kills the process during a long run, use the in-app button instead; the
-same `Runner.claim` prevents concurrent runs.
-
-## Notes and gotchas
-
-- Never `rmmod kernelsu`. It panics the kernel and takes USB down with it.
-- The stage-2 exec runs with an empty environment. Always use absolute paths.
-- Return codes: `0` ksud was launched and the exec status pipe reached EOF, `1`
-  the ksud `execve` failed, `2` watchdog inconclusive, `3` preflight/patching
-  failed, `4` `finit_module` failed (KMI/vermagic/signature), `5`
-  namespace/mount failed, `6` ksud staging failed. `0` does not prove that
-  KernelSU installed; Java still waits for `su -c id`.
-- Manual reruns can see stale `/dev/dfm*` markers from an earlier pass. The
-  boot chain avoids this through `/dev/df`, but the UI Run again path does not.
-- The stage 1 mutex lives at `/dev/df`. If a run dies halfway it stays behind
-  and later passes wait for `su` instead of re-exploting; only a reboot clears
-  it.
-- The ADB receiver is shell-only by permission. Do not lower it to an
-  unprotected receiver; any app could trigger a kernel exploit.
-- The KG helper assumes the Samsung vendor HAL and `/system/lib64` arm64. On
-  another device it fails and the Java path is used.
-- Patch the KO variants only if you must. They are built outside this repo with
-  the Samsung DDK and copied into `app/src/main/jni/ko/`.
-- This is one-device research code. Do not treat it as a portable root tool.
+- Return code `0` means ksud was launched, not that root is live. The app still
+  probes `su`.
+- The stage-1 mutex is `/dev/df`. If a run dies halfway, later boot passes wait
+  for `su` instead of re-exploiting; only a reboot clears it.
+- Manual reruns can see stale `/dev/dfm*` markers from a previous pass.
+- Never `rmmod kernelsu`; it panics the kernel.
+- The Knox Guard TA unlock can write a one-way fuse. Treat it as irreversible.
+- Patch KO images only with the Samsung DDK, and keep their provenance.
+- This is not a portable root tool.
 
 ## Project layout
 
 ```
-app/src/main/java/df/root/     MainActivity, Native (JNI host), DFRootApp,
-                               HomeScreen, LogScreen, AboutScreen, DfrootViewModel,
-                               Runner, BootChain, KeepService, KeepReceiver,
-                               PostRoot, KgBroadcast, KgWatchdog, TargetGuard,
-                               Diagnostics, Probes, BootId, AssetPrep, TextParse,
-                               RootProbe, RootRecord, BootReceiver, RootReceiver,
-                               LogFiles, Stats, CrashLog (in RootApp)
-app/src/main/jni/              exp.c, libc.S, libcxx.S, elf_parser.c, ko/*
-app/src/main/assets/ksud       KernelSU userspace binary
-app/src/main/assets/kgta_helper  arm64 KG vendor-HAL helper
-tools/kgta_helper.c            helper source
-tools/build-kgta-helper.sh     helper build script (NDK)
-app/src/main/res/              icon, strings, themes
+app/src/main/java/df/root/    app, service, state, UI and logs
+app/src/main/jni/             exp.c, libc.S, libcxx.S, elf_parser.c, ko/
+app/src/main/assets/ksud      patched KernelSU userspace
+app/src/main/assets/kgta_helper
+tools/                        helper source and artifact checks
+dirtyfrag-lkm/                LKM source
 ```
 
 ## Credits
 
-The exploit is not my work. I put the pieces together for this device and
-rebuilt the UI.
+Exploit work is not mine. Key upstream projects:
 
-- diabl0w, the original DFRoot app: https://github.com/diabl0w/DFRoot
-- LSPosed, LSPromise and the DirtyFrag proof of concept:
-  https://github.com/LSPosed/LSPromise
-- polygraphene, DFReroot and the SELinux permissive modules:
-  https://github.com/polygraphene/DFReroot
-- combeng6th, DirtyInit and the unprivileged XFRM socket method:
-  https://github.com/combeng6th/DirtyInit
+- diabl0w, DFRoot: https://github.com/diabl0w/DFRoot
+- LSPosed, LSPromise: https://github.com/LSPosed/LSPromise
+- polygraphene, DFReroot: https://github.com/polygraphene/DFReroot
+- combeng6th, DirtyInit: https://github.com/combeng6th/DirtyInit
 - tiann, KernelSU: https://github.com/tiann/KernelSU
-- rushiranpise, Root My Galaxy Next:
-  https://github.com/rushiranpise/Root-My-Galaxy-Next
-- BuSung-dev, Root My Galaxy Payloads:
-  https://github.com/BuSung-dev/Root-My-Galaxy-Payloads
+- rushiranpise, Root My Galaxy Next: https://github.com/rushiranpise/Root-My-Galaxy-Next
+- BuSung-dev, Root My Galaxy Payloads: https://github.com/BuSung-dev/Root-My-Galaxy-Payloads
 - marin-m, vmlinux-to-elf: https://github.com/marin-m/vmlinux-to-elf
-- meticha, Material 3 Expressive Catalog (FAB menu reference):
-  https://github.com/meticha/material-3-expressive-catalog
 
 A36 port and Compose UI: @tsuchinaka
 
 ## License
 
-The A36 port, the Compose UI and the persistence/service code are MIT (see
-`LICENSE`). Bundled binaries and upstream sources keep their own licenses:
-`NOTICE.md` lists them, including the patched KernelSU userspace build, the
-GPL-2.0 dirtyfrag module and its DDK image, and the BSD header in
-`app/src/main/jni/include.inc`.
-
-## Final warning
-
-This is exploit code. It writes to kernel memory. It can brick the device, trip
-Knox, or lose your warranty. Use it only on hardware you own and can afford to
-lose. I do not condone using it on devices you do not own, and I do not provide
-support for it.
+The A36 port, UI and service code are MIT (`LICENSE`). Bundled binaries and
+upstream sources keep their own licenses; see `NOTICE.md`.
