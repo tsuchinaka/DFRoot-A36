@@ -11,6 +11,7 @@ final class Probes {
     }
 
     static String prop(String name) {
+        Stats.getprop();
         Process process = null;
         try {
             process = new ProcessBuilder("getprop", name).redirectErrorStream(true).start();

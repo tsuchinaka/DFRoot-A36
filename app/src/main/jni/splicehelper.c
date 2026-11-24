@@ -13,7 +13,8 @@
 // argv[1] = file offset (decimal string)
 // argv[2] = file path
 // argv[3] = "r"  read 16 bytes and write them to fd 0
-//           "rb" read 4096 bytes and write them to fd 0
+//           "rb" read argv[4] bytes (max 4096) and write them to fd 0
+//           "sb" splice argv[4] bytes of file pages into fd 1
 //           absent: splice 16 bytes of the file page into fd 1
 
 #define OUT_FD  0
@@ -82,14 +83,22 @@ void start_c(void *argblock) {
         mysyscall1((unsigned long)(w == 16 ? 0 : 2), __NR_exit_group);
     }
 
+    unsigned long want = BULK_SZ;
+    if (argc >= 5 && argv[4] != NULL) {
+        want = parse_int(argv[4]);
+    }
+    if (want == 0 || want > BULK_SZ) {
+        mysyscall1(1, __NR_exit_group);
+    }
+
     if (mode && streq(mode, "rb")) {
-        /* Bulk read: one exec per 4 KB chunk instead of one per 16 bytes. */
+        /* Bulk read: exact length, so a partial final chunk is not a failure. */
         mysyscall3((unsigned long)file_fd, (unsigned long)off, SEEK_SET, __NR_lseek);
         unsigned long total = 0;
-        while (total < BULK_SZ) {
+        while (total < want) {
             long n = mysyscall3((unsigned long)file_fd,
                                 (unsigned long)(rbuf + total),
-                                BULK_SZ - total, __NR_read);
+                                want - total, __NR_read);
             if (n <= 0) break;
             total += (unsigned long)n;
         }
@@ -102,7 +111,27 @@ void start_c(void *argblock) {
             }
             done += (unsigned long)w;
         }
-        mysyscall1((unsigned long)(total == BULK_SZ ? 0 : 1), __NR_exit_group);
+        mysyscall1((unsigned long)(total == want ? 0 : 1), __NR_exit_group);
+    }
+
+    if (mode && streq(mode, "sb")) {
+        /* One helper exec fills the pipe with the whole chunk of page refs. */
+        unsigned long moved = 0;
+        while (moved < want) {
+            long n = mysyscall6(
+                (unsigned long)file_fd,
+                (unsigned long)&off,
+                PIPE_FD,
+                (unsigned long)NULL,
+                want - moved,
+                SPLICE_F_MOVE,
+                __NR_splice);
+            if (n <= 0) {
+                mysyscall1(1, __NR_exit_group);
+            }
+            moved += (unsigned long)n;
+        }
+        mysyscall1(0, __NR_exit_group);
     }
 
     /* Splice mode: splice 16-byte page into PIPE_FD */

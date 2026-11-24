@@ -13,7 +13,9 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        KeepService.start(this);
+        if (BootReceiver.isAutoEnabled(this)) {
+            KeepService.start(this);
+        }
         KeepService.requestExemptions(this);
         DfrootUi.attach(this);
     }

@@ -49,6 +49,7 @@ final class RootProbe {
     }
 
     static Result probe(long timeoutSeconds) {
+        Stats.suProbe();
         java.lang.Process process = null;
         try {
             process = new ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start();

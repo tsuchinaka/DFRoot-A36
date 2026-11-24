@@ -21,7 +21,6 @@ public class RootApp extends Application {
         super.onCreate();
         installCrashLog();
         DynamicColors.applyToActivitiesIfAvailable(this);
-        KeepService.start(this);
         Thread prep = new Thread(() -> {
             try {
                 AssetPrep.prepareIfNeeded(this);

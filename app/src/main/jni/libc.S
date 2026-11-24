@@ -258,7 +258,7 @@ s2_fail_mark:
     .balign 4
 s2_copy_strs_end:
 
-    sub sp, sp, 80
+    sub sp, sp, 96
 
     create_mark mark_bind_ns
 
@@ -289,6 +289,17 @@ s2_copy_strs_end:
     mov x8, #SYS_mount
     svc 0
     b.ne bind_fail
+
+    // Status pipe. The write end is O_CLOEXEC: EOF means execve succeeded,
+    // one byte means execve returned. This removes the fixed post-launch wait.
+    movn w9, #0
+    str w9, [sp, 72]        // read fd
+    str w9, [sp, 76]        // write fd
+    add x9, sp, #72
+    mov x0, x9
+    movl w1, O_CLOEXEC
+    mov x8, #SYS_pipe2
+    svc 0
 
     // x26=1: include --soft-reboot; x26=0: omit it.
     adr     x9, soft_reboot_flag
@@ -336,20 +347,66 @@ fork_ksud:
     str x0, [sp, 64]    // child: 0 (64-bit NULL terminator); parent: child pid (branches away)
     cbnz w0, s2_wait_ksud
 
-    // child: execve ksud (bind-mounted over logcat)
+    // child: close the read end, then execve ksud (bind-mounted over logcat)
+    ldr w0, [sp, 72]
+    cmp w0, #0
+    b.lt 11f
+    mov x8, #SYS_close
+    svc 0
+11:
     adr x0, logcat_path
     mov x1, sp
     mov x2, xzr
     mov x8, #SYS_execve
     svc 0
 
+    // execve returned: report one byte to the parent, then the marker.
+    ldr w0, [sp, 76]
+    cmp w0, #0
+    b.lt 12f
+    add x1, sp, #80
+    mov w2, #1
+    strb w2, [x1]
+    mov x8, #SYS_write
+    svc 0
+12:
     create_mark mark_exec_fail
     mov x0, #1
     mov x8, #SYS_exit
     svc #0
 
 s2_wait_ksud:
+    // Close the write end, then block until execve either succeeds (EOF) or
+    // fails (one status byte).
+    ldr w0, [sp, 76]
+    cmp w0, #0
+    b.lt 13f
+    mov x8, #SYS_close
+    svc 0
+    ldr w0, [sp, 72]
+    cmp w0, #0
+    b.lt 13f
+13:
+    ldr w0, [sp, 72]
+    cmp w0, #0
+    b.lt 14f
+    add x1, sp, #80
+    mov x2, #1
+    mov x8, #SYS_read
+    svc 0
+    cmn w0, #4           // EINTR
+    b.eq 13b
+    mov w27, w0
+    ldr w0, [sp, 72]
+    mov x8, #SYS_close
+    svc 0
+    cmp w27, #0
+    b.ne 15f
+14:
     create_mark mark_ksud_ok
+    b myexit
+15:
+    create_mark mark_exec_fail
 
 myexit:
     mov x0, #1

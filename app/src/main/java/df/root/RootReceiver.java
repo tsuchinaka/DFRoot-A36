@@ -47,6 +47,7 @@ public class RootReceiver extends BroadcastReceiver {
                     return;
                 }
                 try {
+                    KeepService.start(app);
                     Log.i(TAG, "adb root: start");
                     int rc = Runner.run(app, msg -> Log.i(TAG, msg.trim()), false);
                     Log.i(TAG, "adb root: rc=" + rc);

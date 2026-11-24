@@ -33,6 +33,7 @@ final class Diagnostics {
         out.append("kg_state: ").append(TextParse.kgStateName(TextParse.kgState(Probes.prop("knox.kg.state")))).append(" raw=").append(Probes.prop("knox.kg.state")).append('\n');
         out.append("boot_completed: ").append(Probes.prop("sys.boot_completed")).append('\n');
         out.append("rooted_this_boot: ").append(RootRecord.rootedThisBoot(ctx)).append('\n');
+        out.append("stats: ").append(Stats.snapshot()).append('\n');
         RootProbe.Result probe = RootProbe.probe();
         out.append("su: live=").append(probe.live).append(" detail=").append(probe.detail).append('\n');
         out.append('\n').append(RootProbe.diagnose()).append('\n');

@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -60,6 +61,10 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     private var managerInstalled = false
     private var managerVersion = ""
     private var managerName = ""
+    private var lastPassCheckedAt = 0L
+    private var lastPassCache = ""
+    private var lastProbeAt = 0L
+    private var lastProbe: RootProbe.Result? = null
 
     init {
         val target = TargetGuard.check(context)
@@ -68,46 +73,103 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 kernelVersion = System.getProperty("os.version") ?: "",
                 deviceModel = android.os.Build.MODEL,
                 autoEnabled = isAutoEnabled(),
-                log = loadPersistedLog(),
                 targetOk = target.ok,
                 targetDetail = target.detail,
-                kgEnabled = KgWatchdog.enabled(context),
-                kgState = TextParse.kgState(Probes.prop("knox.kg.state")),
-                lastPass = lastPassLine(),
             )
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            val log = loadPersistedLog()
+            val kg = TextParse.kgState(Probes.prop("knox.kg.state"))
+            val pass = lastPassLine()
+            lastPassCache = pass
+            lastPassCheckedAt = SystemClock.elapsedRealtime()
+            _state.update { it.copy(log = log, kgState = kg, lastPass = pass) }
+        }
+        startProbe()
+    }
+
+    fun setForeground(value: Boolean) {
+        if (foreground == value) return
+        foreground = value
+        if (value) {
+            startProbe()
+        } else {
+            probeJob?.cancel()
+            probeJob = null
+        }
+    }
+
+    private fun startProbe() {
+        if (!foreground) return
+        probeJob?.cancel()
         probeJob = viewModelScope.launch {
             while (true) {
                 refresh()
-                delay(if (foreground) PROBE_INTERVAL_MS else PROBE_INTERVAL_BG_MS)
+                delay(PROBE_INTERVAL_MS)
             }
         }
     }
 
-    fun setForeground(value: Boolean) {
-        foreground = value
-    }
-
     private suspend fun refresh() {
-        val probe = withContext(Dispatchers.IO) { RootProbe.probe() }
-        refreshManager()
-        val pass = lastPassLine()
-        _state.update {
-            it.copy(
-                suProbed = true,
-                rootLive = probe.live,
-                suDetail = if (probe.live) context.getString(R.string.su_ok) else probe.detail,
+        Stats.uiRefresh()
+        val snapshot = withContext(Dispatchers.IO) {
+            val now = SystemClock.elapsedRealtime()
+            val probe = if (lastProbe?.live == true
+                && now - lastProbeAt < SU_VERIFY_MS
+                && PostRoot.heartbeatHealthy()
+            ) {
+                lastProbe!!
+            } else {
+                RootProbe.probe().also {
+                    lastProbe = it
+                    lastProbeAt = now
+                }
+            }
+            refreshManager()
+            val pass = if (now - lastPassCheckedAt >= LAST_PASS_INTERVAL_MS) {
+                lastPassCheckedAt = now
+                lastPassLine().also { lastPassCache = it }
+            } else {
+                lastPassCache
+            }
+            RefreshSnapshot(
+                probe = probe,
                 chainRan = chainRan(),
                 autoEnabled = isAutoEnabled(),
-                managerInstalled = managerInstalled,
-                managerVersion = managerVersion,
-                managerName = managerName,
                 kgEnabled = KgWatchdog.enabled(context),
                 kgState = TextParse.kgState(Probes.prop("knox.kg.state")),
                 lastPass = pass,
             )
         }
+        _state.update {
+            it.copy(
+                suProbed = true,
+                rootLive = snapshot.probe.live,
+                suDetail = if (snapshot.probe.live) {
+                    context.getString(R.string.su_ok)
+                } else {
+                    snapshot.probe.detail
+                },
+                chainRan = snapshot.chainRan,
+                autoEnabled = snapshot.autoEnabled,
+                managerInstalled = managerInstalled,
+                managerVersion = managerVersion,
+                managerName = managerName,
+                kgEnabled = snapshot.kgEnabled,
+                kgState = snapshot.kgState,
+                lastPass = snapshot.lastPass,
+            )
+        }
     }
+
+    private data class RefreshSnapshot(
+        val probe: RootProbe.Result,
+        val chainRan: Boolean,
+        val autoEnabled: Boolean,
+        val kgEnabled: Boolean,
+        val kgState: Int,
+        val lastPass: String,
+    )
 
     fun runChain() {
         if (!TargetGuard.check(context).ok) {
@@ -122,11 +184,12 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
             snack(R.string.already_running)
             return
         }
+        KeepService.start(context)
         _state.update { it.copy(running = true) }
         report("\n=== DFRoot a36xq / DirtyFrag CVE-2026-43284 ===\n")
 
         runJob = viewModelScope.launch {
-            val startedAt = System.currentTimeMillis()
+            val startedAt = SystemClock.elapsedRealtime()
             try {
                 val rc = withContext(Dispatchers.IO) { Runner.run(context, this@DfrootViewModel, false) }
                 report("\nRESULT rc=$rc\n")
@@ -138,16 +201,16 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                     }
                     report(context.getString(R.string.waiting_for_install) + "\n")
                     var lastNote = 0L
-                    while (System.currentTimeMillis() - startedAt < ROOT_WAIT_MS) {
+                    while (SystemClock.elapsedRealtime() - startedAt < ROOT_WAIT_MS) {
                         val probed = withContext(Dispatchers.IO) { RootProbe.probe() }
                         if (probed.live) {
                             report(context.getString(R.string.su_ok) + "\n")
                             break
                         }
                         delay(2000)
-                        if (System.currentTimeMillis() - lastNote > 20000) {
-                            lastNote = System.currentTimeMillis()
-                            val seconds = (System.currentTimeMillis() - startedAt) / 1000
+                        if (SystemClock.elapsedRealtime() - lastNote > 20000) {
+                            lastNote = SystemClock.elapsedRealtime()
+                            val seconds = (SystemClock.elapsedRealtime() - startedAt) / 1000
                             report(context.getString(R.string.still_installing, seconds) + "\n")
                         }
                     }
@@ -173,7 +236,12 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         report(context.getString(if (enabled) R.string.auto_enabled else R.string.auto_disabled) + "\n")
         _state.update { it.copy(autoEnabled = enabled) }
         if (enabled) {
+            KeepService.start(context)
             KeepService.requestBatteryExemption(context)
+        } else if (!_state.value.rootLive) {
+            KeepService.cancelKeep(context)
+            KeepService.cancelRetry(context)
+            KeepService.stopIfIdle(context)
         }
     }
 
@@ -189,11 +257,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
 
     override fun report(msg: String) {
         Log.i(TAG, msg.trim())
-        try {
-            FileOutputStream(logFile, true).use { it.write(msg.toByteArray()) }
-            trimFile(logFile)
-        } catch (_: Throwable) {
-        }
+        LogFiles.append(logFile, msg.toByteArray(), FILE_CAP, FILE_KEEP)
         _state.update { s ->
             var log = s.log + msg
             if (log.length > LOG_LIMIT) log = log.substring(log.length - LOG_KEEP)
@@ -202,40 +266,52 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     }
 
     fun copyLog() {
-        try {
-            val text = readText(logFile).ifEmpty { _state.value.log }
-            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("DFRoot log", text))
-            snack(R.string.log_copied)
-        } catch (t: Throwable) {
-            Log.w(TAG, "copy log: $t")
+        viewModelScope.launch {
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    readText(logFile).ifEmpty { _state.value.log }
+                }
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("DFRoot log", text))
+                snack(R.string.log_copied)
+            } catch (t: Throwable) {
+                Log.w(TAG, "copy log: $t")
+            }
         }
     }
 
     fun clearLog() {
-        try {
-            FileOutputStream(logFile, false).close()
-        } catch (_: Throwable) {
-        }
         _state.update { it.copy(log = "") }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                FileOutputStream(logFile, false).close()
+            } catch (_: Throwable) {
+            }
+        }
         snack(R.string.log_cleared)
     }
 
     fun exportLog() {
-        try {
-            val text = readText(logFile).ifEmpty { _state.value.log }
-            val file = exportFile(text, "dfroot-log.txt")
-            share(file, context.getString(R.string.log_export))
-        } catch (t: Throwable) {
-            Log.e(TAG, "export log", t)
-            snack(R.string.log_export_failed)
+        viewModelScope.launch {
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    val text = readText(logFile).ifEmpty { _state.value.log }
+                    exportFile(text, "dfroot-log.txt")
+                }
+                share(file, context.getString(R.string.log_export))
+            } catch (t: Throwable) {
+                Log.e(TAG, "export log", t)
+                snack(R.string.log_export_failed)
+            }
         }
     }
 
     fun exportDiagnostics() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch {
             try {
-                val file = exportFile(Diagnostics.build(context), "dfroot-diagnostics.txt")
+                val file = withContext(Dispatchers.IO) {
+                    exportFile(Diagnostics.build(context), "dfroot-diagnostics.txt")
+                }
                 share(file, context.getString(R.string.log_diag))
             } catch (t: Throwable) {
                 Log.e(TAG, "export diagnostics", t)
@@ -277,25 +353,38 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     private fun loadPersistedLog(): String {
         return try {
             val boot = File(context.createDeviceProtectedStorageContext().filesDir, "boot.log")
-            val bootBytes = if (boot.isFile) boot.readBytes() else ByteArray(0)
             val prefs = context.getSharedPreferences("dfroot", Context.MODE_PRIVATE)
             var upto = prefs.getLong("bootlog_upto", 0L)
-            if (upto < 0 || upto > bootBytes.size) upto = 0L
-            if (bootBytes.size > upto) {
-                val add = String(bootBytes, upto.toInt(), bootBytes.size - upto.toInt(), Charsets.UTF_8)
-                FileOutputStream(logFile, true).use { it.write(add.toByteArray()) }
-                prefs.edit().putLong("bootlog_upto", bootBytes.size.toLong()).apply()
+            val size = if (boot.isFile) boot.length() else 0L
+            if (upto < 0 || upto > size) upto = 0L
+            if (size > upto) {
+                val count = (size - upto).coerceAtMost(LOG_IMPORT_MAX).toInt()
+                val from = (size - count).coerceAtLeast(upto)
+                val bytes = ByteArray((size - from).toInt())
+                var read = 0
+                java.io.FileInputStream(boot).use { input ->
+                    input.channel.position(from)
+                    while (read < bytes.size) {
+                        val n = input.channel.read(java.nio.ByteBuffer.wrap(bytes, read, bytes.size - read))
+                        if (n <= 0) break
+                        read += n
+                    }
+                }
+                if (read > 0) {
+                    FileOutputStream(logFile, true).use { it.write(bytes, 0, read) }
+                }
+                prefs.edit().putLong("bootlog_upto", from + read).apply()
             }
             trimFile(logFile)
-            readText(logFile).takeLast(LOG_KEEP)
+            readTail(logFile, LOG_KEEP)
         } catch (_: Throwable) {
             ""
         }
     }
 
     private fun refreshManager() {
-        val now = System.currentTimeMillis()
-        if (now - managerCheckedAt < 60000L) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - managerCheckedAt < MANAGER_REFRESH_MS) return
         managerCheckedAt = now
         val managers = listOf(
             "me.weishu.kernelsu" to "KernelSU",
@@ -326,9 +415,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         return try {
             val boot = File(context.createDeviceProtectedStorageContext().filesDir, "boot.log")
             if (!boot.isFile) return ""
-            val bytes = boot.readBytes()
-            val from = (bytes.size - 8192).coerceAtLeast(0)
-            val lines = String(bytes, from, bytes.size - from, Charsets.UTF_8).split('\n')
+            val lines = readTail(boot, 8192).split('\n')
             lines.asReversed().firstOrNull {
                 val line = it.trim()
                 line.startsWith("chain: total") || line.startsWith("chain: rooted") ||
@@ -349,14 +436,11 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     }
 
     private fun trimFile(file: File) {
-        if (!file.isFile || file.length() <= FILE_CAP) return
-        try {
-            val bytes = file.readBytes()
-            val start = (bytes.size - FILE_KEEP.toInt()).coerceAtLeast(0)
-            file.writeBytes(bytes.copyOfRange(start, bytes.size))
-        } catch (_: Throwable) {
-        }
+        LogFiles.trim(file, FILE_CAP, FILE_KEEP)
     }
+
+    private fun readTail(file: File, maxBytes: Int): String =
+        LogFiles.readTail(file, maxBytes)
 
     private fun resultMessage(rc: Int, live: Boolean): Int = when {
         live -> R.string.result_success
@@ -373,10 +457,13 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         const val TAG = "dfroot"
         const val LOG_LIMIT = 200000
         const val LOG_KEEP = 100000
-        const val FILE_CAP = 512000L
-        const val FILE_KEEP = 256000L
+        const val LOG_IMPORT_MAX = 512L * 1024L
+        const val FILE_CAP = 512L * 1024L
+        const val FILE_KEEP = 256L * 1024L
         const val ROOT_WAIT_MS = 180000L
-        const val PROBE_INTERVAL_MS = 15000L
-        const val PROBE_INTERVAL_BG_MS = 60000L
+        const val PROBE_INTERVAL_MS = 30000L
+        const val SU_VERIFY_MS = 300000L
+        const val MANAGER_REFRESH_MS = 300000L
+        const val LAST_PASS_INTERVAL_MS = 60000L
     }
 }

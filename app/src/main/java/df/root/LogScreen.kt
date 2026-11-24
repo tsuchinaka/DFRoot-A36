@@ -9,9 +9,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -40,24 +41,25 @@ fun LogScreen(
     onExport: () -> Unit,
     onDiagnostics: () -> Unit,
 ) {
-    val scroll = rememberScrollState()
+    val listState = rememberLazyListState()
     var query by rememberSaveable { mutableStateOf("") }
     var follow by rememberSaveable { mutableStateOf(true) }
     var confirmClear by remember { mutableStateOf(false) }
     val hasLog = log.isNotEmpty()
-    val displayed = remember(log, query) {
+    val lines = remember(log, query) {
         if (query.isBlank()) {
-            log
+            log.lineSequence().toList()
         } else {
             log.lineSequence()
                 .filter { it.contains(query, ignoreCase = true) }
-                .joinToString("\n")
+                .toList()
         }
     }
+    val displayed = lines.size
 
     LaunchedEffect(displayed, follow) {
-        if (follow && displayed.isNotEmpty()) {
-            scroll.scrollTo(Int.MAX_VALUE)
+        if (follow && displayed > 0) {
+            listState.scrollToItem(displayed - 1)
         }
     }
 
@@ -72,7 +74,7 @@ fun LogScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = stringResource(R.string.log_count, displayed.lineCount()),
+                text = stringResource(R.string.log_count, displayed),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
@@ -109,7 +111,7 @@ fun LogScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        } else if (displayed.isEmpty()) {
+        } else if (displayed == 0) {
             Box(Modifier.fillMaxSize().padding(top = 24.dp)) {
                 Text(
                     text = stringResource(R.string.log_no_match),
@@ -118,21 +120,26 @@ fun LogScreen(
                 )
             }
         } else {
-            SelectionContainer(Modifier.fillMaxSize()) {
-                Text(
-                    text = displayed,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scroll)
-                        .padding(bottom = 96.dp),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    overflow = TextOverflow.Visible,
-                )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 96.dp),
+            ) {
+                items(lines) { line ->
+                    SelectionContainer {
+                        Text(
+                            text = line.ifEmpty { " " },
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            overflow = TextOverflow.Visible,
+                        )
+                    }
+                }
             }
         }
     }
@@ -170,5 +177,3 @@ private fun LogButton(label: String, enabled: Boolean = true, onClick: () -> Uni
         Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
-
-private fun String.lineCount(): Int = if (isEmpty()) 0 else count { it == '\n' } + 1

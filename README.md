@@ -18,7 +18,7 @@ This is a port and repackaging of the DFRoot app for the A36, with the UI
 rebuilt in Jetpack Compose using Material 3 Expressive. It also re-applies the
 Knox Guard unlock after the root chain on this device.
 
-Current internal build: `4.0.0-kg` (`versionCode 29`).
+Current internal build: `4.1.0-perf` (`versionCode 30`).
 
 ## Tested on
 
@@ -99,9 +99,10 @@ build does not need to rebuild it.
 - Home shows LIVE / OFFLINE, the jailbreak button, and one list for kernel,
   device, `su`, the manager, the last pass, the auto-root switch and the
   Knox Guard unlock switch with the live `knox.kg.state`.
-- Log keeps `run.log` across runs, with search, a follow toggle that does not
-  fight manual scrolling, clear, copy, export and a diagnostics bundle
-  (run.log + boot.log + probe + properties + versions + KG state).
+- Log keeps `run.log` across runs, with search, a follow toggle, clear, copy,
+  export and a diagnostics bundle (run.log + boot.log + probe + properties +
+  versions + KG state). File imports and trimming stay off the main thread,
+  logs rotate at 512 KB, and the list renders lazily.
 - Back from Log or About returns to Home before leaving the app.
 - About is the version, two links and the credit list.
 - English and Spanish resources; the battery optimization prompt is asked
@@ -126,9 +127,12 @@ build does not need to rebuild it.
   (`rc == 0` or the `/dev/df` mutex), so a failed pass costs seconds, not
   three minutes of su polls. Wakelocks are held per attempt, and the pass log
   is buffered in memory and flushed once at the end.
-- A foreground service stays up for the whole boot. Its keep worker adapts:
-  30 s without root, 120 s with a healthy root side, and it requests a chain
-  pass the moment a live root is observed to be gone.
+- A foreground service stays only while auto-root is enabled or root is live.
+  Its keep worker adapts: 30 s without root, 120 s with a healthy root side,
+  and it requests a chain pass the moment a live root is observed to be gone.
+  With auto-root off and no root it stops and leaves no keep alarm behind.
+  The UI probes only while visible, reuses a fresh supervisor heartbeat for
+  five minutes, and caches manager and KG state between slow refreshes.
 - The post-root scripts run from one root daemon per boot. KernelSU starts it
   from `service.d` at boot; when the app finds root without it, it launches it
   once and pays a single `su`. The daemon writes a world-readable heartbeat
@@ -145,11 +149,13 @@ build does not need to rebuild it.
 - `ksud` and `kgta_helper` are staged once per app version into both storages,
   so the exploit window does not pay the extraction I/O.
 - The native side verifies every patched chunk by reading it back (one retry),
-  reads vendor pages in 4 KB chunks instead of one crash_dump exec per 16
-  bytes, rejects out-of-range hook branches, validates the JNI inputs, and
-  checks `finit_module` and every ksud copy write. The UPID/JPID sender socket
-  is bound once in Java and handed to native as an fd, removing the port
-  re-bind race.
+  keeps a 4 KB chunk of vendor page references in one pipe and sends every
+  16-byte block without another crash_dump fork, reuses one datagram pipe per
+  chunk, rejects out-of-range hook branches, validates the JNI inputs, and
+  checks `finit_module` and every ksud copy write. Native emits helper, pipe,
+  packet, byte and elapsed-time counters at the end of each pass. The sender
+  socket is bound once in Java and handed to native as an fd, removing the
+  port re-bind race.
 - State-first Knox Guard unlock: TA unlock in Active/Locked only, kgclient-uid
   service call for the lockscreen unbind and property, cleanup broadcast only
   after a real unlock, and a per-boot watchdog with RPMB error parking.
@@ -173,6 +179,12 @@ build does not need to rebuild it.
 ./create-keystore.sh        # only if app/keystore.jks does not exist yet
 ./gradlew assembleRelease
 # output: app/build/outputs/apk/release/app-release.apk
+```
+
+For a fast internal signed build without R8:
+
+```sh
+./gradlew :app:assembleRelease -Pdfroot.minify=false
 ```
 
 Or use the wrapper script, which also drops `dirtyfrag.apk` next to the project:
@@ -215,14 +227,15 @@ the status card says so and tells you to add DFRoot to the KernelSU superuser
 list. The app shows `LIVE` only when `su` actually answers.
 
 Auto jailbreak on boot and unlock is the switch on Home. It enables the boot
-receiver component, nothing else. The receiver fires on locked boot, boot
-completed, credential unlock and every lockscreen unlock, refuses to run on a
-device that does not pass the target gate, skips the exploit when su is
-already live or the /dev/df mutex is held, waits for the overlay only when
-the kernel can actually be patched, and retries on a 15/30/45/60 s ladder
-while the boot settles (90 s cap afterwards). Boot attempts land in
-device-protected boot.log and are mirrored into run.log once credential
-storage unlocks, so the Log tab shows them.
+receiver and starts the keep service; turning it off stops the service when
+no root is live. The receiver fires on locked boot, boot completed, credential
+unlock and every lockscreen unlock, refuses to run on a device that does not
+pass the target gate, skips the exploit when su is already live or the
+/dev/df mutex is held, waits for the overlay only when the kernel can
+actually be patched, and retries on a 15/30/45/60 s ladder while the boot
+settles (90 s cap afterwards). Boot attempts land in device-protected
+boot.log and are mirrored into run.log once credential storage unlocks, so
+the Log tab shows them.
 
 ## ADB trigger
 

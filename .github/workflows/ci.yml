@@ -4,10 +4,15 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -15,11 +20,34 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-37
+            build-tools;37.0.0
+            ndk;29.0.14206865
+            cmake;3.22.1
       - name: Keystore
-        run: ./create-keystore.sh
+        env:
+          KEYSTORE_B64: ${{ secrets.DFROOT_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > app/keystore.jks
+          else
+            ./create-keystore.sh
+          fi
       - name: Unit tests
         run: ./gradlew :app:test --no-daemon --console=plain
       - name: Assemble release
-        run: ./gradlew :app:assembleRelease --no-daemon --console=plain
+        env:
+          DFROOT_STORE_PASSWORD: ${{ secrets.DFROOT_STORE_PASSWORD }}
+          DFROOT_KEY_ALIAS: ${{ secrets.DFROOT_KEY_ALIAS }}
+          DFROOT_KEY_PASSWORD: ${{ secrets.DFROOT_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --no-daemon --console=plain --stacktrace
       - name: Verify artifacts
         run: ./tools/check-build.sh
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dfroot-apk-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

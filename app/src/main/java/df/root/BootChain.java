@@ -50,6 +50,8 @@ final class BootChain {
     private static final long WAKE_ATTEMPT_MS = 120000L;
     private static final long WAKE_OVERLAY_MS = 200000L;
     private static final long WAKE_GAP_MS = 45000L;
+    private static final long LOG_CAP_BYTES = 512L * 1024L;
+    private static final long LOG_KEEP_BYTES = 256L * 1024L;
 
     /** Elapsed-realtime of the next armed retry, or 0 when none is armed. */
     static volatile long nextRetryAt;
@@ -58,6 +60,7 @@ final class BootChain {
     private static String stageName = "";
     private static int ladder;
     private static int gatePending;
+    private static boolean gateOpen;
     private static long firstPassUptime = -1L;
 
     private BootChain() {
@@ -70,6 +73,7 @@ final class BootChain {
     }
 
     static synchronized void pass(final Context appCtx, final String action) {
+        Stats.chainPass();
         final Context deCtx = appCtx.createDeviceProtectedStorageContext();
         final String act = action == null ? "boot" : action;
         loadStage(deCtx);
@@ -97,7 +101,8 @@ final class BootChain {
             if (claimed) {
                 Runner.release();
             }
-            log.report("chain: total " + (SystemClock.elapsedRealtime() - t0) + "ms\n");
+            log.report("chain: total " + (SystemClock.elapsedRealtime() - t0) + "ms "
+                    + Stats.snapshot() + "\n");
             saveStage(deCtx);
             log.flush(appCtx, deCtx);
         }
@@ -158,6 +163,7 @@ final class BootChain {
             return;
         }
         gatePending = 0;
+        gateOpen = blocker == null;
         log.report("chain: gate open (" + (blocker == null ? "ready" : "forced " + blocker) + ") "
                 + (SystemClock.elapsedRealtime() - gateStart) + "ms\n");
         if (Intent_USER_PRESENT.equals(act)) {
@@ -279,6 +285,9 @@ final class BootChain {
     // ------------------------------------------------------------------ gate
 
     private static String gateBlocker() {
+        if (gateOpen) {
+            return null;
+        }
         if (!new File("/apex/com.android.runtime/bin/crash_dump64").exists()) {
             return "crash_dump64";
         }
@@ -384,12 +393,14 @@ final class BootChain {
             stageName = "";
             ladder = 0;
             gatePending = 0;
+            gateOpen = false;
             firstPassUptime = SystemClock.elapsedRealtime();
         } else {
             stageBootId = current;
             stageName = map.getOrDefault("stage", "");
             ladder = parse(map.get("ladder"));
             gatePending = parse(map.get("pending"));
+            gateOpen = "1".equals(map.get("gate_open"));
             firstPassUptime = parseLong(map.get("first"), -1L);
         }
     }
@@ -404,6 +415,7 @@ final class BootChain {
                         + "stage=" + stageName + "\n"
                         + "ladder=" + ladder + "\n"
                         + "pending=" + gatePending + "\n"
+                        + "gate_open=" + (gateOpen ? "1" : "0") + "\n"
                         + "first=" + firstPassUptime + "\n")
                         .getBytes(StandardCharsets.UTF_8));
             } finally {
@@ -461,18 +473,8 @@ final class BootChain {
         }
 
         private static void append(File file, byte[] bytes) {
-            try {
-                File parent = file.getParentFile();
-                if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
-                    return;
-                }
-                FileOutputStream out = new FileOutputStream(file, true);
-                try {
-                    out.write(bytes);
-                } finally {
-                    out.close();
-                }
-            } catch (Throwable ignored) {
+            synchronized (Buffer.class) {
+                LogFiles.append(file, bytes, LOG_CAP_BYTES, LOG_KEEP_BYTES);
             }
         }
     }

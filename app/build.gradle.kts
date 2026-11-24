@@ -5,8 +5,18 @@ plugins {
 
 // Signing values come from Gradle properties or env; the historical local
 // defaults keep sideload builds working without a secret store.
-fun secret(prop: String, env: String, fallback: String): String =
-    (project.findProperty(prop) as String?) ?: System.getenv(env) ?: fallback
+fun secret(prop: String, env: String, fallback: String): String {
+    val property = (project.findProperty(prop) as String?)?.takeIf { it.isNotBlank() }
+    return property
+        ?: System.getenv(env)?.takeIf { it.isNotBlank() }
+        ?: fallback
+}
+
+// R8 is enabled by default. `-Pdfroot.minify=false` is the internal fast build
+// used when only a signed, installable artifact is needed.
+val minifyRelease = providers.gradleProperty("dfroot.minify")
+    .map { it.toBoolean() }
+    .getOrElse(true)
 
 android {
     namespace = "df.root"
@@ -17,8 +27,8 @@ android {
         applicationId = "df.root"
         minSdk = 33
         targetSdk = 36
-        versionCode = 29
-        versionName = "4.0.0-kg"
+        versionCode = 30
+        versionName = "4.1.0-perf"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -40,8 +50,8 @@ android {
         }
         release {
             signingConfig = signingConfigs.getByName("keystore")
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = minifyRelease
+            isShrinkResources = minifyRelease
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

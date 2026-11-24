@@ -164,6 +164,10 @@ final class PostRoot {
         return out == null ? DEAD : LIVE;
     }
 
+    static boolean heartbeatHealthy() {
+        return heartbeatFresh();
+    }
+
     private static boolean heartbeatFresh() {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 new FileInputStream(HEARTBEAT), StandardCharsets.UTF_8))) {

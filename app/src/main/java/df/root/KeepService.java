@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Owns the keep-alive and the auto-root retries.
@@ -60,6 +61,7 @@ public class KeepService extends Service {
         return t;
     });
 
+    private static final AtomicBoolean CHAIN_QUEUED = new AtomicBoolean();
     private static volatile boolean running;
     private static volatile boolean knownLive;
     private static volatile long lastChainRequest;
@@ -79,11 +81,33 @@ public class KeepService extends Service {
                 Log.w(TAG, "keep start: " + t2);
             }
         }
-        scheduleKeep(ctx, KEEP_ALARM_MS);
+        if (shouldKeep(ctx)) {
+            scheduleKeep(ctx, currentKeepDelay());
+        }
+    }
+
+    static void stopIfIdle(Context ctx) {
+        if (Runner.isClaimed() || knownLive || CHAIN_QUEUED.get()
+                || BootReceiver.isAutoEnabled(ctx)) {
+            return;
+        }
+        Log.i(TAG, "keep: idle with auto-root off, stopping");
+        try {
+            ctx.stopService(new Intent(ctx, KeepService.class));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static boolean shouldKeep(Context ctx) {
+        return knownLive || BootReceiver.isAutoEnabled(ctx);
     }
 
     /** Enqueue one chain pass; serialized on the dfroot-chain worker. */
     static void requestChain(Context ctx, String action) {
+        if (!CHAIN_QUEUED.compareAndSet(false, true)) {
+            Log.i(TAG, "chain: request already queued, coalesced");
+            return;
+        }
         lastChainRequest = SystemClock.elapsedRealtime();
         Intent i = new Intent(ctx, KeepService.class)
                 .putExtra(EXTRA_CHAIN, action == null ? "boot" : action);
@@ -93,6 +117,7 @@ public class KeepService extends Service {
             try {
                 ctx.startService(i);
             } catch (Throwable t2) {
+                CHAIN_QUEUED.set(false);
                 Log.w(TAG, "chain start: " + t2);
             }
         }
@@ -114,6 +139,20 @@ public class KeepService extends Service {
             } catch (Throwable exactDenied) {
                 am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
             }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static void cancelKeep(Context ctx) {
+        try {
+            AlarmManager am = (AlarmManager) ctx.getSystemService(ALARM_SERVICE);
+            Intent i = new Intent(ctx, KeepReceiver.class).setAction(KeepReceiver.ACTION);
+            PendingIntent pi = PendingIntent.getBroadcast(ctx, KEEP_ALARM_CODE, i,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            if (am != null) {
+                am.cancel(pi);
+            }
+            pi.cancel();
         } catch (Throwable ignored) {
         }
     }
@@ -210,7 +249,9 @@ public class KeepService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         promote();
-        scheduleKeep(this, currentKeepDelay());
+        if (shouldKeep(this)) {
+            scheduleKeep(this, currentKeepDelay());
+        }
         String chain = intent == null ? null : intent.getStringExtra(EXTRA_CHAIN);
         if (chain != null) {
             final String action = chain;
@@ -220,8 +261,13 @@ public class KeepService extends Service {
                     BootChain.pass(app, action);
                 } catch (Throwable t) {
                     Log.w(TAG, "chain: " + t);
+                } finally {
+                    CHAIN_QUEUED.set(false);
                 }
             });
+        } else if (!shouldKeep(this)) {
+            stopIfIdle(this);
+            return START_NOT_STICKY;
         }
         ensureWorker();
         poke();
@@ -230,16 +276,21 @@ public class KeepService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        scheduleKeep(this, currentKeepDelay());
-        start(this);
+        if (shouldKeep(this)) {
+            scheduleKeep(this, currentKeepDelay());
+            start(this);
+        }
         super.onTaskRemoved(rootIntent);
     }
 
     @Override
     public void onDestroy() {
         running = false;
+        CHAIN_QUEUED.set(false);
         poke();
-        scheduleKeep(this, currentKeepDelay());
+        if (shouldKeep(this)) {
+            scheduleKeep(this, currentKeepDelay());
+        }
         try {
             unregisterReceiver(pokeReceiver);
         } catch (Throwable ignored) {
@@ -331,6 +382,14 @@ public class KeepService extends Service {
                                     requestChain(this, "su-drop");
                                 } else if (BootReceiver.isAutoEnabled(this) && chainIdle()) {
                                     requestChain(this, "tick");
+                                }
+                                if (!BootReceiver.isAutoEnabled(this) && !knownLive
+                                        && !CHAIN_QUEUED.get()) {
+                                    Log.i(TAG, "keep: no root and auto-root off, stopping");
+                                    cancelKeep(this);
+                                    cancelRetry(this);
+                                    stopSelf();
+                                    return;
                                 }
                                 // Without auto-root there is nothing to gain
                                 // from a fast cadence: relax to 5 minutes.
