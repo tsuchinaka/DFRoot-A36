@@ -9,10 +9,10 @@ Temporary KernelSU root for the Samsung Galaxy A36 5G (`SM-A366E`) using
 DirtyFrag (`CVE-2026-43284`). Tap one button, `su` starts working, no reboot and
 no cable. It can also root on boot/unlock and re-apply the Knox Guard unlock.
 
-Current release: [`v4.2.0-persist`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.2.0-persist)
+Current release: [`v4.3.0-ui`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.3.0-ui)
 - APK: `dfroot.apk`
-- Version: `4.2.0-persist` (`versionCode 31`), arm64 only
-- SHA-256: `c005e55ef079a9ce5e432deae149b3b6ca750a4ebf45b7f01ac01f5fe20964cf`
+- Version: `4.3.0-ui` (`versionCode 32`), arm64 only
+- SHA-256: `09f88f23fe02fc92237ec885537a175b709e6872f1ed6c2af31eeb78ce99652e`
 - Signed with the v4.0 key, so it updates in place
 - CI build/tests passed; this revision was not tested on hardware
 
@@ -55,6 +55,24 @@ adb logcat -s dfroot
 ```
 
 The receiver requires `android.permission.DUMP`; ordinary apps cannot call it.
+
+## What changed in 4.3
+
+- Home shows the real chain state: rooted, needs-reboot, no-allowlist, stalled
+  or a retry countdown, read from the `root-stage` file the chain persists.
+- A root side card reports heartbeat age, supervisor, watchdog, kernel module,
+  exploit mutex and boot scripts from the paths the supervisor publishes.
+- The run card shows the live phase and an elapsed timer instead of an
+  unlabelled progress bar; the last pass is a structured row (rc, duration,
+  action).
+- Root-side actions appear only when they apply: reboot (confirmed) on
+  needs-reboot, manager deep link and copy-su on no-allowlist.
+- The auto-root switch writes its intent to device-protected storage and the
+  supervisor honours it, so toggling it off is no longer undone every 2 minutes.
+- Bottom navigation replaces the FAB menu; whole-row toggles; status colour
+  tokens in the theme; severity colouring and per-pass dividers in the log.
+- Diagnostics export includes the chain state, root side, last Knox Guard
+  result and `sup.log`.
 
 ## What changed in 4.2
 
