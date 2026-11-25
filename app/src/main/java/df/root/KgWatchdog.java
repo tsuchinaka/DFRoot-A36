@@ -39,7 +39,7 @@ final class KgWatchdog {
 
     /** Called from the keep worker when the root side is healthy. */
     static void maybeFix(Context ctx) {
-        if (!enabled(ctx) || Runner.isClaimed()) {
+        if (!enabled(ctx) || Runner.isClaimed(ctx)) {
             return;
         }
         SharedPreferences sp = ctx.getSharedPreferences("dfroot", Context.MODE_PRIVATE);

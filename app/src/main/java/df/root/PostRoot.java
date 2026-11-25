@@ -31,6 +31,7 @@ final class PostRoot {
     private static final String TAG = "dfroot";
     private static final String SUP_BASE = "dfroot-sup-";
     private static final String LOADER_NAME = "dfroot-sup-loader.sh";
+    private static final String WATCH_NAME = "dfroot-watch.sh";
     private static final String RUN_DIR = "/data/dfroot/run";
     private static final String HEARTBEAT = RUN_DIR + "/heartbeat";
     private static final long HEARTBEAT_FRESH_MS = 90000L;
@@ -51,89 +52,158 @@ final class PostRoot {
                     + "[ -n \"$f\" ] && exec sh \"$f\"\n"
                     + "exit 0\n";
 
+    /**
+     * Second, independent watchdog. KernelSU runs service.d once per boot, so
+     * this is a separate process with no shared state: if the supervisor wedges
+     * or is killed, this restarts it.
+     */
+    private static final String WATCH_SH =
+            "#!/system/bin/sh\n"
+                    + "RUN=" + RUN_DIR + "\n"
+                    + "LOG=/data/dfroot/log\n"
+                    + "mkdir -p \"$RUN\" \"$LOG\" 2>/dev/null\n"
+                    + "boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
+                    + "wp=\"$RUN/watch.pid\"\n"
+                    + "if [ -f \"$wp\" ]; then\n"
+                    + "  read opid oboot < \"$wp\" 2>/dev/null\n"
+                    + "  if [ -n \"$opid\" ] && [ \"$oboot\" = \"$boot\" ] && [ -d \"/proc/$opid\" ]; then\n"
+                    + "    exit 0\n"
+                    + "  fi\n"
+                    + "fi\n"
+                    + "echo \"$$ $boot\" > \"$wp\"\n"
+                    + "while true; do\n"
+                    + "  boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
+                    + "  pid=\"\"; pboot=\"\"\n"
+                    + "  if [ -f \"$RUN/sup.pid\" ]; then read pid pboot < \"$RUN/sup.pid\" 2>/dev/null; fi\n"
+                    + "  if [ -z \"$pid\" ] || [ \"$pboot\" != \"$boot\" ] || [ ! -d \"/proc/$pid\" ]; then\n"
+                    + "    setsid sh /data/adb/service.d/dfroot-sup.sh >>\"$LOG/sup.log\" 2>&1 </dev/null &\n"
+                    + "    sleep 5\n"
+                    + "  fi\n"
+                    + "  sleep 60\n"
+                    + "done\n";
+
+    /**
+     * Root-side keeper. One instance per boot, heartbeat every 30 s, and it is
+     * the only component that can still act when the app is force-stopped,
+     * disabled by Samsung's app sweeps, or sitting behind a poisoned /dev/df.
+     */
     private static final String SUP_SH =
             "#!/system/bin/sh\n"
                     + "export PATH=/system/bin:/system/xbin:/vendor/bin\n"
                     + "umask 022\n"
-                    + "# DFRoot supervisor: one instance per boot, heartbeat every 30 s.\n"
-                    + "mkdir -p /data/dfroot/run /data/dfroot/log /data/adb/service.d 2>/dev/null\n"
-                    + "pidfile=/data/dfroot/run/sup.pid\n"
-                    + "if [ -f \"$pidfile\" ]; then\n"
-                    + "  old=$(cat \"$pidfile\" 2>/dev/null)\n"
-                    + "  if [ -n \"$old\" ] && [ -d \"/proc/$old\" ]; then exit 0; fi\n"
-                    + "fi\n"
-                    + "echo $$ > \"$pidfile\"\n"
+                    + "RUN=" + RUN_DIR + "\n"
+                    + "LOG=/data/dfroot/log\n"
+                    + "mkdir -p \"$RUN\" \"$LOG\" /data/adb/service.d 2>/dev/null\n"
                     + "START_BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
-                    + "MARK=/data/dfroot/run/oneshot-$START_BOOT\n"
-                    + "if [ ! -f \"${MARK}init\" ]; then\n"
+                    + "pidf=\"$RUN/sup.pid\"\n"
+                    + "if [ -f \"$pidf\" ]; then\n"
+                    + "  read opid oboot < \"$pidf\" 2>/dev/null\n"
+                    + "  if [ -n \"$opid\" ] && [ \"$oboot\" = \"$START_BOOT\" ] && [ -d \"/proc/$opid\" ]; then\n"
+                    + "    exit 0\n"
+                    + "  fi\n"
+                    + "fi\n"
+                    + "echo \"$$ $START_BOOT\" > \"$pidf\"\n"
+                    + "log() { echo \"$(date +%s) $*\" >> \"$LOG/sup.log\"; }\n"
+                    + "rotate() {\n"
+                    + "  for f in \"$LOG/sup.log\" \"$LOG/postroot.log\"; do\n"
+                    + "    [ -f \"$f\" ] || continue\n"
+                    + "    [ \"$(wc -c < \"$f\" 2>/dev/null || echo 0)\" -gt 524288 ] || continue\n"
+                    + "    tail -c 262144 \"$f\" > \"$f.tmp\" 2>/dev/null && mv \"$f.tmp\" \"$f\"\n"
+                    + "    chmod 644 \"$f\" 2>/dev/null\n"
+                    + "  done\n"
+                    + "}\n"
+                    + "su_ok() { su -c id 2>/dev/null | grep -q 'uid=0'; }\n"
+                    + "revive_app() {\n"
+                    + "  am start -n df.root/.MainActivity >/dev/null 2>&1\n"
+                    + "  am start-foreground-service -n df.root/.KeepService >/dev/null 2>&1\n"
+                    + "}\n"
+                    + "police_app() {\n"
+                    + "  pm enable df.root >/dev/null 2>&1\n"
+                    + "  pm enable df.root/.BootReceiver >/dev/null 2>&1\n"
+                    + "  pm enable df.root/.KeepService >/dev/null 2>&1\n"
+                    + "  pm enable df.root/.KeepReceiver >/dev/null 2>&1\n"
+                    + "  pm grant df.root android.permission.POST_NOTIFICATIONS >/dev/null 2>&1\n"
                     + "  dumpsys deviceidle whitelist +df.root >/dev/null 2>&1\n"
                     + "  cmd appops set df.root RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1\n"
                     + "  cmd appops set df.root RUN_IN_BACKGROUND allow >/dev/null 2>&1\n"
-                    + "  pm grant df.root android.permission.POST_NOTIFICATIONS >/dev/null 2>&1\n"
-                    + "  rm -f /data/adb/service.d/dfroot-keep.sh\n"
-                    + "  touch \"${MARK}init\"\n"
-                    + "fi\n"
-                    + "hb=" + HEARTBEAT + "\n"
-                    + "( while true; do echo $(cut -d' ' -f1 /proc/uptime) > \"$hb\"; chmod 644 \"$hb\" 2>/dev/null; sleep 30; done ) &\n"
-                    + "HB=$!\n"
-                    + "log() { echo \"$(date +%s) $*\" >> /data/dfroot/log/postroot.log; }\n"
+                    + "  cmd appops set df.root START_FOREGROUND allow >/dev/null 2>&1\n"
+                    + "  am set-standby-bucket df.root active >/dev/null 2>&1\n"
+                    + "  cmd activity set-inactive df.root false >/dev/null 2>&1\n"
+                    + "}\n"
+                    + "police_manager() {\n"
+                    + "  for p in me.weishu.kernelsu com.rifsxd.ksunext com.resukisu.resukisu; do\n"
+                    + "    pm list packages 2>/dev/null | grep -qx \"package:$p\" || continue\n"
+                    + "    dumpsys deviceidle whitelist +$p >/dev/null 2>&1\n"
+                    + "    cmd appops set $p RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1\n"
+                    + "    am set-standby-bucket $p active >/dev/null 2>&1\n"
+                    + "  done\n"
+                    + "}\n"
+                    + "clear_poison() {\n"
+                    + "  [ -e /dev/df ] || return 0\n"
+                    + "  su_ok && return 0\n"
+                    + "  log 'poisoned mutex with su dead, clearing'\n"
+                    + "  rm -f /dev/df /dev/dfm* 2>/dev/null\n"
+                    + "  revive_app\n"
+                    + "}\n"
                     + "alive() { [ -f \"$1\" ] && [ -d \"/proc/$(cat \"$1\" 2>/dev/null)\" ]; }\n"
                     + "run_keep() {\n"
                     + "  f=$1\n"
                     + "  [ -f \"$f\" ] || return 0\n"
-                    + "  case \"$f\" in *" + SUP_BASE + "*.sh|*dfroot-sup.sh|*dfroot-keep.sh) return 0 ;; esac\n"
+                    + "  case \"$f\" in *" + SUP_BASE + "*.sh|*dfroot-sup.sh) return 0 ;; esac\n"
                     + "  tag=$(echo \"$f\" | tr / _)\n"
-                    + "  pidf=/data/dfroot/run/pid$tag\n"
-                    + "  alive \"$pidf\" && return 0\n"
+                    + "  pidf2=\"$RUN/pid$tag\"\n"
+                    + "  alive \"$pidf2\" && return 0\n"
                     + "  log \"start $f\"\n"
-                    + "  setsid sh \"$f\" >>/data/dfroot/log/postroot.log 2>&1 </dev/null &\n"
-                    + "  echo $! > \"$pidf\"\n"
+                    + "  setsid sh \"$f\" >>\"$LOG/postroot.log\" 2>&1 </dev/null &\n"
+                    + "  echo $! > \"$pidf2\"\n"
                     + "}\n"
                     + "run_once() {\n"
                     + "  f=$1\n"
                     + "  [ -f \"$f\" ] || return 0\n"
                     + "  tag=$(echo \"$f\" | tr / _)\n"
-                    + "  stamp=${MARK}$tag\n"
+                    + "  stamp=\"$RUN/oneshot-$START_BOOT$tag\"\n"
                     + "  [ -f \"$stamp\" ] && return 0\n"
-                    + "  fail=${stamp}.retry\n"
+                    + "  fail=\"${stamp}.retry\"\n"
                     + "  if [ -f \"$fail\" ]; then\n"
                     + "    n=$(cat \"$fail\" 2>/dev/null)\n"
-                    + "    [ -n \"$n\" ] && [ \"$(date +%s)\" -lt \"$n\" ] && return 0\n"
+                    + "    if [ -n \"$n\" ] && [ \"$(date +%s)\" -lt \"$n\" ]; then return 0; fi\n"
                     + "  fi\n"
                     + "  log \"once $f\"\n"
-                    + "  timeout 45 sh \"$f\" >>/data/dfroot/log/postroot.log 2>&1\n"
+                    + "  timeout 45 sh \"$f\" >>\"$LOG/postroot.log\" 2>&1\n"
                     + "  rc=$?\n"
                     + "  log \"once $f rc=$rc\"\n"
-                    + "  if [ \"$rc\" -eq 0 ]; then\n"
-                    + "    touch \"$stamp\"\n"
-                    + "  else\n"
+                    + "  if [ \"$rc\" -eq 0 ]; then touch \"$stamp\"; else\n"
                     + "    echo $(( $(date +%s) + 300 )) > \"$fail\"\n"
                     + "  fi\n"
                     + "}\n"
+                    + "hb=\"$RUN/heartbeat\"\n"
+                    + "( while true; do\n"
+                    + "    cut -d' ' -f1 /proc/uptime > \"$hb.tmp\" 2>/dev/null && mv \"$hb.tmp\" \"$hb\"\n"
+                    + "    chmod 644 \"$hb\" 2>/dev/null\n"
+                    + "    sleep 30\n"
+                    + "  done ) &\n"
+                    + "HBPID=$!\n"
+                    + "n=0\n"
                     + "while true; do\n"
                     + "  boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
                     + "  if [ -n \"$START_BOOT\" ] && [ -n \"$boot\" ] && [ \"$boot\" != \"$START_BOOT\" ]; then\n"
-                    + "    log \"boot id changed, exiting\"\n"
-                    + "    kill $HB 2>/dev/null\n"
+                    + "    log 'boot id changed, exiting'\n"
+                    + "    kill $HBPID 2>/dev/null\n"
                     + "    exit 0\n"
                     + "  fi\n"
-                    + "  if [ -f /data/dfroot/log/postroot.log ] && [ $(wc -c < /data/dfroot/log/postroot.log 2>/dev/null || echo 0) -gt 524288 ]; then\n"
-                    + "    tail -c 262144 /data/dfroot/log/postroot.log > /data/dfroot/log/postroot.log.tmp 2>/dev/null\n"
-                    + "    mv /data/dfroot/log/postroot.log.tmp /data/dfroot/log/postroot.log 2>/dev/null\n"
-                    + "    chmod 644 /data/dfroot/log/postroot.log 2>/dev/null\n"
-                    + "  fi\n"
-                    + "  pidof df.root >/dev/null 2>&1 || am start-foreground-service -n df.root/.KeepService >/dev/null 2>&1\n"
+                    + "  rotate\n"
+                    + "  clear_poison\n"
+                    + "  pidof df.root >/dev/null 2>&1 || revive_app\n"
+                    + "  n=$((n + 1))\n"
+                    + "  if [ $((n % 8)) -eq 0 ]; then police_app; police_manager; fi\n"
                     + "  run_keep /data/dfroot/apply.sh\n"
                     + "  for f in /data/dfroot/*.sh; do\n"
                     + "    [ -f \"$f\" ] || continue\n"
-                    + "    case \"$f\" in *apply.sh|*" + SUP_BASE + "*.sh) continue ;; esac\n"
-                    + "    base=$(basename \"$f\")\n"
-                    + "    case \"$base\" in service.sh|*service*) run_keep \"$f\" ;; *) run_once \"$f\" ;; esac\n"
+                    + "    case \"$f\" in *apply.sh) continue ;; esac\n"
+                    + "    case \"$(basename \"$f\")\" in *service*) run_keep \"$f\" ;; *) run_once \"$f\" ;; esac\n"
                     + "  done\n"
-                    + "  for f in /data/dfroot/keep.d/*.sh; do\n"
-                    + "    run_keep \"$f\"\n"
-                    + "  done\n"
-                    + "  sleep 30\n"
+                    + "  for f in /data/dfroot/keep.d/*.sh; do run_keep \"$f\"; done\n"
+                    + "  sleep 15\n"
                     + "done\n";
 
     /**
@@ -141,7 +211,7 @@ final class PostRoot {
      * a couple of short su round-trips.
      */
     static int tick(Context ctx) {
-        if (Runner.isClaimed()) {
+        if (Runner.isClaimed(ctx)) {
             return BUSY;
         }
         long now = SystemClock.elapsedRealtime();
@@ -192,9 +262,11 @@ final class PostRoot {
         Context de = deviceProtected(ctx);
         write(new File(de.getFilesDir(), name), SUP_SH);
         write(new File(de.getFilesDir(), LOADER_NAME), LOADER_SH);
+        write(new File(de.getFilesDir(), WATCH_NAME), WATCH_SH);
         if (de != ctx) {
             write(new File(ctx.getFilesDir(), name), SUP_SH);
             write(new File(ctx.getFilesDir(), LOADER_NAME), LOADER_SH);
+            write(new File(ctx.getFilesDir(), WATCH_NAME), WATCH_SH);
         }
     }
 
@@ -217,8 +289,13 @@ final class PostRoot {
         if (!loader.isFile()) {
             loader = new File(ctx.getFilesDir(), LOADER_NAME);
         }
+        File watch = new File(de.getFilesDir(), WATCH_NAME);
+        if (!watch.isFile()) {
+            watch = new File(ctx.getFilesDir(), WATCH_NAME);
+        }
         String supPath = sup.getAbsolutePath();
         String loaderPath = loader.getAbsolutePath();
+        String watchPath = watch.getAbsolutePath();
         String runName = SUP_BASE + versionCode(ctx) + ".sh";
         return ""
                 + "set +e\n"
@@ -228,10 +305,16 @@ final class PostRoot {
                 + "cmp -s '" + loaderPath + "' /data/adb/service.d/dfroot-sup.sh 2>/dev/null"
                 + " || cp '" + loaderPath + "' /data/adb/service.d/dfroot-sup.sh\n"
                 + "chmod 755 /data/adb/service.d/dfroot-sup.sh 2>/dev/null\n"
+                + "cmp -s '" + watchPath + "' /data/adb/service.d/dfroot-watch.sh 2>/dev/null"
+                + " || cp '" + watchPath + "' /data/adb/service.d/dfroot-watch.sh\n"
+                + "chmod 755 /data/adb/service.d/dfroot-watch.sh 2>/dev/null\n"
                 + "rm -f /data/adb/service.d/dfroot-keep.sh\n"
+                + "setsid sh /data/adb/service.d/dfroot-watch.sh"
+                + " >>/data/dfroot/log/sup.log 2>&1 </dev/null &\n"
                 + "if [ -f " + RUN_DIR + "/sup.pid ]; then\n"
-                + "  old=$(cat " + RUN_DIR + "/sup.pid 2>/dev/null)\n"
-                + "  if [ -n \"$old\" ] && [ -d \"/proc/$old\" ]; then echo running; exit 0; fi\n"
+                + "  read old oboot < " + RUN_DIR + "/sup.pid 2>/dev/null\n"
+                + "  now=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
+                + "  if [ -n \"$old\" ] && [ -d \"/proc/$old\" ] && [ \"$oboot\" = \"$now\" ]; then echo running; exit 0; fi\n"
                 + "fi\n"
                 + "setsid sh /data/adb/service.d/dfroot-sup.sh"
                 + " >>/data/dfroot/log/sup.log 2>&1 </dev/null &\n"

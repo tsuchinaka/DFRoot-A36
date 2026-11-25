@@ -114,6 +114,7 @@
   .equ SYS_epoll_pwait,     22
   .equ SYS_dup3,            24
   .equ SYS_fcntl,           25
+  .equ SYS_unlinkat,        35
   .equ SYS_mount,           40
   .equ SYS_statfs,          43
   .equ SYS_faccessat,       48

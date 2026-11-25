@@ -56,23 +56,39 @@ final class BootChain {
     /** Elapsed-realtime of the next armed retry, or 0 when none is armed. */
     static volatile long nextRetryAt;
 
+    private static final java.util.concurrent.locks.ReentrantLock PASS =
+            new java.util.concurrent.locks.ReentrantLock();
+
     private static String stageBootId = "";
     private static String stageName = "";
     private static int ladder;
     private static int gatePending;
     private static boolean gateOpen;
+    private static int stageFails;
     private static long firstPassUptime = -1L;
 
     private BootChain() {
     }
 
     /** Called by KeepService when a live root is observed to be gone. */
-    static synchronized void noteRootLost() {
+    static void noteRootLost() {
         ladder = 0;
         gatePending = 0;
     }
 
-    static synchronized void pass(final Context appCtx, final String action) {
+    static void pass(final Context appCtx, final String action) {
+        if (!PASS.tryLock()) {
+            Log.i(TAG, "chain: a pass is already in flight, dropping request");
+            return;
+        }
+        try {
+            passLocked(appCtx, action);
+        } finally {
+            PASS.unlock();
+        }
+    }
+
+    private static void passLocked(final Context appCtx, final String action) {
         Stats.chainPass();
         final Context deCtx = appCtx.createDeviceProtectedStorageContext();
         final String act = action == null ? "boot" : action;
@@ -85,7 +101,7 @@ final class BootChain {
                 Log.i(TAG, "chain: auto disabled, ignoring " + act);
                 return;
             }
-            if (!Runner.claim()) {
+            if (!Runner.claim(appCtx)) {
                 Log.i(TAG, "chain: a run is already in flight, skipping " + act);
                 return;
             }
@@ -131,6 +147,11 @@ final class BootChain {
         if ("unsupported".equals(stageName)) {
             stageName = "";
         }
+        if (RootRecord.rootedThisBoot(appCtx) && RootProbe.probe().live
+                && PostRoot.heartbeatHealthy()) {
+            log.report("chain: root and supervisor already healthy this boot\n");
+            return;
+        }
         if (RootProbe.probe().live) {
             if ("rooted".equals(stageName)) {
                 log.report("chain: su live and already marked rooted this boot\n");
@@ -171,18 +192,34 @@ final class BootChain {
         }
 
         if (new File("/dev/df").exists()) {
+            // The mutex is O_EXCL and lives in tmpfs. If su is dead, no pass in
+            // this boot can re-enter stage 2, so give it one bounded wait and
+            // then stop burning wake locks on a boot that needs a reboot.
             log.report("chain: mutex held, waiting for su instead of re-exploit\n");
-            PowerManager.WakeLock wake = acquire(appCtx, WAKE_OVERLAY_MS);
+            PowerManager.WakeLock wake = acquire(appCtx, 60000L);
             try {
-                Runner.applyOverlay(deCtx, log, OVERLAY_WAIT_MS);
+                for (int i = 0; i < 20 && !RootProbe.probe().live; i++) {
+                    Thread.sleep(3000);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } finally {
                 release(wake);
             }
             if (RootProbe.probe().live) {
+                PowerManager.WakeLock overlay = acquire(appCtx, WAKE_OVERLAY_MS);
+                try {
+                    Runner.applyOverlay(deCtx, log, OVERLAY_WAIT_MS);
+                } finally {
+                    release(overlay);
+                }
                 markRooted(appCtx, deCtx, log, t0);
             } else {
-                log.report("chain: su not live after overlay wait, arming watchdog\n");
-                failPass(appCtx);
+                stageName = "needs-reboot";
+                log.report("chain: /dev/df held with su dead; reboot required\n");
+                nextRetryAt = SystemClock.elapsedRealtime() + 30L * 60L * 1000L;
+                KeepService.scheduleRetry(appCtx, 30L * 60L * 1000L);
             }
             return;
         }
@@ -248,6 +285,14 @@ final class BootChain {
             }
             if (RootProbe.probe().live) {
                 markRooted(appCtx, deCtx, log, t0);
+            } else if (new File("/sys/module/kernelsu").isDirectory()) {
+                // The module is in the kernel, so the primitive worked and this
+                // uid is simply not allowlisted in the manager. Re-exploiting
+                // cannot fix that; stop hammering the kernel for it.
+                stageName = "no-allowlist";
+                log.report("chain: KSU loaded but this uid is not allowlisted in the manager\n");
+                nextRetryAt = SystemClock.elapsedRealtime() + 5L * 60L * 1000L;
+                KeepService.scheduleRetry(appCtx, 5L * 60L * 1000L);
             } else {
                 log.report("chain: kernel patched but su not live, arming watchdog\n");
                 failPass(appCtx);
@@ -263,6 +308,7 @@ final class BootChain {
         stageName = "rooted";
         ladder = 0;
         gatePending = 0;
+        stageFails = 0;
         KeepService.cancelRetry(appCtx);
         nextRetryAt = 0L;
         log.report("chain: rooted " + (SystemClock.elapsedRealtime() - t0) + "ms\n");
@@ -274,6 +320,14 @@ final class BootChain {
                 - (SystemClock.elapsedRealtime() - firstPassUptime);
         long delay = settleLeft > 0 ? LADDER[index] : LADDER_CAP_MS;
         ladder++;
+        stageFails++;
+        // A patched firmware keeps the KMI strings and silently defeats the
+        // module. After six failures in one boot, stop the 90 s hammer and drop
+        // to one pass per half hour, so a dead build costs battery once in a
+        // while instead of all night.
+        if (stageFails >= 6) {
+            delay = 30L * 60L * 1000L;
+        }
         scheduleNext(appCtx, delay);
     }
 
@@ -394,6 +448,7 @@ final class BootChain {
             ladder = 0;
             gatePending = 0;
             gateOpen = false;
+            stageFails = 0;
             firstPassUptime = SystemClock.elapsedRealtime();
         } else {
             stageBootId = current;
@@ -401,6 +456,7 @@ final class BootChain {
             ladder = parse(map.get("ladder"));
             gatePending = parse(map.get("pending"));
             gateOpen = "1".equals(map.get("gate_open"));
+            stageFails = parse(map.get("fails"));
             firstPassUptime = parseLong(map.get("first"), -1L);
         }
     }
@@ -416,6 +472,7 @@ final class BootChain {
                         + "ladder=" + ladder + "\n"
                         + "pending=" + gatePending + "\n"
                         + "gate_open=" + (gateOpen ? "1" : "0") + "\n"
+                        + "fails=" + stageFails + "\n"
                         + "first=" + firstPassUptime + "\n")
                         .getBytes(StandardCharsets.UTF_8));
             } finally {

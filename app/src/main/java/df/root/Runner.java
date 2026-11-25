@@ -43,20 +43,103 @@ final class Runner {
 
     private static final AtomicBoolean CLAIMED = new AtomicBoolean(false);
     private static final AtomicBoolean OVERLAY_RUNNING = new AtomicBoolean(false);
+    private static final String LOCK_NAME = "chain.lock";
+
+    private static volatile java.io.RandomAccessFile lockFile;
+    private static volatile java.nio.channels.FileChannel lockChannel;
+    private static volatile java.nio.channels.FileLock lockHandle;
 
     private Runner() {
     }
 
-    static boolean claim() {
-        return CLAIMED.compareAndSet(false, true);
+    /**
+     * Serializes the chain across processes. KeepService runs in :chain, so an
+     * in-process AtomicBoolean alone would let the UI start a second exploit
+     * while the boot pass is patching page cache.
+     */
+    static boolean claim(Context ctx) {
+        if (!CLAIMED.compareAndSet(false, true)) {
+            return false;
+        }
+        try {
+            File dir = ctx.createDeviceProtectedStorageContext().getFilesDir();
+            if (dir == null) {
+                return true;
+            }
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                return true;
+            }
+            java.io.RandomAccessFile raf = new java.io.RandomAccessFile(
+                    new File(dir, LOCK_NAME), "rw");
+            java.nio.channels.FileChannel ch = raf.getChannel();
+            java.nio.channels.FileLock lock = ch.tryLock();
+            if (lock == null) {
+                ch.close();
+                raf.close();
+                CLAIMED.set(false);
+                return false;
+            }
+            lockFile = raf;
+            lockChannel = ch;
+            lockHandle = lock;
+            return true;
+        } catch (Throwable t) {
+            // A lock file we cannot take is not a reason to refuse the only
+            // chain on the device; the atomic still serializes this process.
+            return true;
+        }
     }
 
     static void release() {
+        java.nio.channels.FileLock lock = lockHandle;
+        lockHandle = null;
+        if (lock != null) {
+            try {
+                lock.release();
+            } catch (Throwable ignored) {
+            }
+        }
+        java.nio.channels.FileChannel ch = lockChannel;
+        lockChannel = null;
+        if (ch != null) {
+            closeQuietly(ch);
+        }
+        java.io.RandomAccessFile raf = lockFile;
+        lockFile = null;
+        if (raf != null) {
+            closeQuietly(raf);
+        }
         CLAIMED.set(false);
     }
 
     static boolean isClaimed() {
         return CLAIMED.get();
+    }
+
+    /** True when any process holds the chain, including the :chain service. */
+    static boolean isClaimed(Context ctx) {
+        if (CLAIMED.get()) {
+            return true;
+        }
+        try {
+            File dir = ctx.createDeviceProtectedStorageContext().getFilesDir();
+            if (dir == null) {
+                return false;
+            }
+            java.io.RandomAccessFile raf = new java.io.RandomAccessFile(
+                    new File(dir, LOCK_NAME), "rw");
+            java.nio.channels.FileChannel ch = raf.getChannel();
+            java.nio.channels.FileLock lock = ch.tryLock();
+            boolean free = lock != null;
+            if (lock != null) {
+                lock.release();
+            }
+            ch.close();
+            raf.close();
+            return !free;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     static String suScript(long timeoutSeconds, String script) {

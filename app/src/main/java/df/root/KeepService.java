@@ -52,6 +52,7 @@ public class KeepService extends Service {
     private static final long TICK_BUSY_MS = 15000L;
     private static final long TICK_MIN_GAP_MS = 10000L;
     private static final long CHAIN_MIN_GAP_MS = 60000L;
+    private static final long CHAIN_REQ_DEBOUNCE_MS = 5000L;
     private static final long RETRY_GRACE_MS = 30000L;
 
     private static final Object GATE = new Object();
@@ -60,6 +61,19 @@ public class KeepService extends Service {
         t.setDaemon(true);
         return t;
     });
+
+    /**
+     * The KG pass runs one to three su round-trips with a 90 s timeout each.
+     * It must not run on the keep tick: a doze mid-wait would stall the healthy
+     * heartbeat loop for minutes and leave a zombie su behind every cycle.
+     */
+    private static final ExecutorService KG = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "dfroot-kg");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private static final AtomicBoolean KG_QUEUED = new AtomicBoolean();
 
     private static final AtomicBoolean CHAIN_QUEUED = new AtomicBoolean();
     private static volatile boolean running;
@@ -87,8 +101,8 @@ public class KeepService extends Service {
     }
 
     static void stopIfIdle(Context ctx) {
-        if (Runner.isClaimed() || knownLive || CHAIN_QUEUED.get()
-                || BootReceiver.isAutoEnabled(ctx)) {
+        if (Runner.isClaimed(ctx) || knownLive || CHAIN_QUEUED.get()
+                || BootReceiver.isAutoEnabled(ctx) || PostRoot.heartbeatHealthy()) {
             return;
         }
         Log.i(TAG, "keep: idle with auto-root off, stopping");
@@ -102,13 +116,22 @@ public class KeepService extends Service {
         return knownLive || BootReceiver.isAutoEnabled(ctx);
     }
 
-    /** Enqueue one chain pass; serialized on the dfroot-chain worker. */
+    /**
+     * Enqueue one chain pass; serialized on the dfroot-chain worker.
+     *
+     * KeepService now lives in :chain, so the queued flag cannot be the
+     * cross-process mutex any more: it is set and cleared inside the service
+     * process and the caller only rate-limits. Duplicate pokes (SCREEN_ON and
+     * USER_PRESENT for the same unlock) collapse here; a real pass is still
+     * serialized by BootChain's pass lock and Runner's file claim.
+     */
     static void requestChain(Context ctx, String action) {
-        if (!CHAIN_QUEUED.compareAndSet(false, true)) {
-            Log.i(TAG, "chain: request already queued, coalesced");
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastChainRequest < CHAIN_REQ_DEBOUNCE_MS) {
+            Log.i(TAG, "chain: request inside debounce, coalesced");
             return;
         }
-        lastChainRequest = SystemClock.elapsedRealtime();
+        lastChainRequest = now;
         Intent i = new Intent(ctx, KeepService.class)
                 .putExtra(EXTRA_CHAIN, action == null ? "boot" : action);
         try {
@@ -117,7 +140,6 @@ public class KeepService extends Service {
             try {
                 ctx.startService(i);
             } catch (Throwable t2) {
-                CHAIN_QUEUED.set(false);
                 Log.w(TAG, "chain start: " + t2);
             }
         }
@@ -256,6 +278,7 @@ public class KeepService extends Service {
         if (chain != null) {
             final String action = chain;
             final Context app = this;
+            CHAIN_QUEUED.set(true);
             CHAIN.execute(() -> {
                 try {
                     BootChain.pass(app, action);
@@ -369,7 +392,7 @@ public class KeepService extends Service {
                         delay = TICK_MIN_GAP_MS - since;
                     } else {
                         lastTickAt = SystemClock.elapsedRealtime();
-                        if (Runner.isClaimed()) {
+                        if (Runner.isClaimed(this)) {
                             delay = TICK_BUSY_MS;
                         } else {
                             int status = PostRoot.tick(this);
@@ -398,8 +421,17 @@ public class KeepService extends Service {
                             } else {
                                 knownLive = true;
                                 updateNotification(true);
-                                if (status == PostRoot.LIVE) {
-                                    KgWatchdog.maybeFix(this);
+                                if (status == PostRoot.LIVE
+                                        && KG_QUEUED.compareAndSet(false, true)) {
+                                    KG.execute(() -> {
+                                        try {
+                                            KgWatchdog.maybeFix(KeepService.this);
+                                        } catch (Throwable t) {
+                                            Log.w(TAG, "kg: " + t);
+                                        } finally {
+                                            KG_QUEUED.set(false);
+                                        }
+                                    });
                                 }
                                 delay = status == PostRoot.BUSY
                                         ? TICK_BUSY_MS : TICK_ROOTED_MS;

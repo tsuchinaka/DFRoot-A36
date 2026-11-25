@@ -180,7 +180,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
             snack(R.string.already_running)
             return
         }
-        if (!Runner.claim()) {
+        if (!Runner.claim(context)) {
             snack(R.string.already_running)
             return
         }
