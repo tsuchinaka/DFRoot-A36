@@ -91,4 +91,71 @@
     <string name="keep_title">DFRoot</string>
     <string name="keep_text_waiting">Waiting for root</string>
     <string name="keep_text_rooted">Root live, scripts running</string>
+
+    <string name="section_status">STATUS</string>
+    <string name="section_chain">Boot chain</string>
+    <string name="section_root_side">Root side</string>
+    <string name="section_device">Device</string>
+    <string name="section_options">Options</string>
+
+    <string name="home_big_running">RUNNING</string>
+    <string name="chain_needs_reboot_title">REBOOT REQUIRED</string>
+    <string name="chain_needs_reboot_body">The exploit mutex is stuck and su is dead. No pass can re-enter this boot, so reboot to retry.</string>
+    <string name="chain_no_allowlist_title">NOT ALLOWLISTED</string>
+    <string name="chain_no_allowlist_body">The kernel module loaded. Grant df.root superuser access in the manager, then probe again — re-exploiting cannot fix this.</string>
+    <string name="chain_retry_in">Retry in %1$s</string>
+    <string name="chain_fails">%1$d failed passes this boot</string>
+    <string name="chain_backed_off">Backed off to one pass every 30 minutes</string>
+    <string name="chain_waiting">No pass has run in this boot yet</string>
+    <string name="chain_last_action">Last pass: %1$s</string>
+    <string name="last_pass_title">Last pass</string>
+    <string name="last_pass_value">rc=%1$d · %2$d s · %3$s</string>
+
+    <string name="root_side_empty">No root side this boot. The five rows below appear once the supervisor is running.</string>
+    <string name="root_side_heartbeat">Heartbeat</string>
+    <string name="root_side_supervisor">Supervisor</string>
+    <string name="root_side_watchdog">Watchdog</string>
+    <string name="root_side_module">Kernel module</string>
+    <string name="root_side_mutex">Exploit mutex</string>
+    <string name="root_side_scripts">Boot scripts</string>
+    <string name="state_fresh">fresh · %1$d s</string>
+    <string name="state_stale">stale</string>
+    <string name="state_running">running</string>
+    <string name="state_absent">absent</string>
+    <string name="state_loaded">loaded</string>
+    <string name="state_held">held</string>
+    <string name="state_installed">installed</string>
+    <string name="state_missing">missing</string>
+
+    <string name="action_reboot">Reboot</string>
+    <string name="action_open_manager">Open manager</string>
+    <string name="action_copy_su">Copy su command</string>
+    <string name="su_copied">su -c id copied</string>
+    <string name="reboot_confirm_title">Reboot now?</string>
+    <string name="reboot_confirm_body">The chain re-runs on boot and nothing on disk is lost. Only reboot when the card says REBOOT REQUIRED.</string>
+    <string name="reboot_confirm_yes">Reboot</string>
+
+    <string name="kg_last">unlock %1$d · TA %2$s</string>
+    <string name="kg_parked">parked until reboot</string>
+    <string name="kg_last_none">No Knox Guard pass yet</string>
+
+    <string name="home_auto_note">Retries on every boot and after a root drop. The root supervisor keeps this on while root is live.</string>
+
+    <string name="phase_starting">Starting</string>
+    <string name="phase_setup">Allocating the IPsec trigger</string>
+    <string name="phase_socket">Binding the encapsulation socket</string>
+    <string name="phase_keys">Deriving SPI and keys</string>
+    <string name="phase_stage">Staging ksud</string>
+    <string name="phase_symbols">Resolving symbols</string>
+    <string name="phase_patch_crash">Patching crash_dump64</string>
+    <string name="phase_patch_vendor">Patching libbinderdebug.so</string>
+    <string name="phase_patch_libs">Patching system libraries</string>
+    <string name="phase_trigger">Waiting for the trigger</string>
+    <string name="phase_stage1">Stage 1: mutex acquired</string>
+    <string name="phase_module">Stage 2: module loaded</string>
+    <string name="phase_ksud">Stage 2: launching ksud</string>
+    <string name="phase_success">ksud launched</string>
+    <string name="phase_cleanup">Restoring patched files</string>
+    <string name="phase_overlay">Applying the overlay</string>
+    <string name="phase_kg">Knox Guard</string>
 </resources>

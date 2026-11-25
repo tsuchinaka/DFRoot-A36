@@ -294,7 +294,7 @@ final class Runner {
             }
         }
 
-        applyKgFix(ctx, reporter);
+        applyKgOnly(ctx, reporter);
     }
 
     /**
@@ -329,7 +329,9 @@ final class Runner {
      * reports a real unlock.
      */
     static KgResult applyKgOnly(Context ctx, IReporter reporter) {
-        return applyKgFix(ctx, reporter);
+        KgResult res = applyKgFix(ctx, reporter);
+        KgWatchdog.record(ctx, res);
+        return res;
     }
 
     private static KgResult applyKgFix(Context ctx, IReporter reporter) {

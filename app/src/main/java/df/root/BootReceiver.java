@@ -7,6 +7,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.util.Log;
 
+import java.io.File;
+import java.io.FileOutputStream;
+
 /**
  * Boot-time entry point. It no longer runs the chain: it only makes sure the
  * keep-alive service is up and enqueues one pass on the dfroot-chain worker.
@@ -17,6 +20,13 @@ public class BootReceiver extends BroadcastReceiver {
 
     static final String ACTION_BOOT_RETRY = "df.root.action.BOOT_RETRY";
 
+    /**
+     * The supervisor runs as root and cannot read the app's component setting
+     * cheaply, so the operator's intent is mirrored into device-protected
+     * storage. Missing file means "on".
+     */
+    private static final String INTENT_FILE = "auto-root";
+
     private static final String TAG = "dfroot";
 
     static boolean isAutoEnabled(Context context) {
@@ -26,6 +36,25 @@ public class BootReceiver extends BroadcastReceiver {
             return state != PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
         } catch (Throwable t) {
             return true;
+        }
+    }
+
+    static void setAutoIntent(Context context, boolean enabled) {
+        try {
+            File dir = context.createDeviceProtectedStorageContext().getFilesDir();
+            if (dir == null) {
+                return;
+            }
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                return;
+            }
+            FileOutputStream out = new FileOutputStream(new File(dir, INTENT_FILE), false);
+            try {
+                out.write(enabled ? '1' : '0');
+            } finally {
+                out.close();
+            }
+        } catch (Throwable ignored) {
         }
     }
 

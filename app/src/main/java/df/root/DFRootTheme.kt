@@ -12,6 +12,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -158,6 +159,36 @@ private val DfrootShapes = Shapes(
     extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(36.dp),
 )
 
+/** Status tri-state. Error is destructive, warning is "attention", ok is alive. */
+class StatusColors(
+    val ok: Color,
+    val okContainer: Color,
+    val warn: Color,
+    val warnContainer: Color,
+    val bad: Color,
+    val badContainer: Color,
+)
+
+private val LightStatus = StatusColors(
+    ok = Color(0xFF1B6B3A),
+    okContainer = Color(0xFFB7F3C8),
+    warn = Color(0xFF7A4B00),
+    warnContainer = Color(0xFFFFE1AA),
+    bad = Color(0xFFBA1A1A),
+    badContainer = Color(0xFFFFDAD6),
+)
+
+private val DarkStatus = StatusColors(
+    ok = Color(0xFF7AE3A0),
+    okContainer = Color(0xFF0C3D22),
+    warn = Color(0xFFFFC46B),
+    warnContainer = Color(0xFF4A2E00),
+    bad = Color(0xFFFFB4AB),
+    badContainer = Color(0xFF93000A),
+)
+
+val LocalStatusColors = staticCompositionLocalOf { LightStatus }
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun DFRootTheme(content: @Composable () -> Unit) {
@@ -177,6 +208,10 @@ fun DFRootTheme(content: @Composable () -> Unit) {
         typography = DfrootTypography,
         shapes = DfrootShapes,
         motionScheme = MotionScheme.expressive(),
-        content = content,
-    )
+    ) {
+        androidx.compose.runtime.CompositionLocalProvider(
+            LocalStatusColors provides if (dark) DarkStatus else LightStatus,
+            content = content,
+        )
+    }
 }

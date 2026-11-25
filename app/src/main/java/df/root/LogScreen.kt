@@ -10,10 +10,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -28,7 +29,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -122,11 +125,16 @@ fun LogScreen(
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = 96.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                items(lines) { line ->
+                itemsIndexed(lines, contentType = { _, _ -> "log" }) { index, line ->
+                    if (index > 0 && isPassHeader(line)) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                    }
                     SelectionContainer {
                         Text(
                             text = line.ifEmpty { " " },
@@ -134,8 +142,9 @@ fun LogScreen(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.sp,
                                 lineHeight = 18.sp,
+                                fontWeight = if (isPassHeader(line)) FontWeight.SemiBold else null,
                             ),
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = lineColor(line),
                             overflow = TextOverflow.Visible,
                         )
                     }
@@ -163,6 +172,23 @@ fun LogScreen(
                 }
             },
         )
+    }
+}
+
+private fun isPassHeader(line: String): Boolean =
+    line.startsWith("=== ") && line.endsWith(" ===")
+
+@Composable
+private fun lineColor(line: String): Color {
+    val colors = MaterialTheme.colorScheme
+    return when {
+        line.startsWith("***") -> colors.error
+        isPassHeader(line) -> colors.secondary
+        line.startsWith("chain:") -> colors.onSurface
+        line.startsWith("[kg") || line.startsWith("[overlay]") -> colors.tertiary
+        line.startsWith("stage1:") || line.startsWith("stage2:") -> colors.primary
+        line.startsWith("*") -> colors.onSurfaceVariant
+        else -> colors.onSurfaceVariant
     }
 }
 

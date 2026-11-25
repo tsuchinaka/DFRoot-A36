@@ -33,6 +33,29 @@ final class Diagnostics {
         out.append("kg_state: ").append(TextParse.kgStateName(TextParse.kgState(Probes.prop("knox.kg.state")))).append(" raw=").append(Probes.prop("knox.kg.state")).append('\n');
         out.append("boot_completed: ").append(Probes.prop("sys.boot_completed")).append('\n');
         out.append("rooted_this_boot: ").append(RootRecord.rootedThisBoot(ctx)).append('\n');
+        ChainStatus chain = ChainStatus.read(ctx);
+        out.append("chain: stage=").append(chain.stage.isEmpty() ? "-" : chain.stage)
+                .append(" fails=").append(chain.fails)
+                .append(" last_rc=").append(chain.lastRc)
+                .append(" last_ms=").append(chain.lastMs)
+                .append(" last_act=").append(chain.lastAct)
+                .append(" retry_in_ms=").append(chain.retryInMs())
+                .append(" same_boot=").append(chain.sameBoot).append('\n');
+        RootSide side = RootSide.read(ctx);
+        out.append("root_side: heartbeat=").append(side.heartbeatFresh)
+                .append(" age_s=").append(side.heartbeatAgeSec)
+                .append(" supervisor=").append(side.supervisorAlive)
+                .append(" watchdog=").append(side.watchdogAlive)
+                .append(" module=").append(side.moduleLoaded)
+                .append(" mutex=").append(side.mutexHeld)
+                .append(" scripts=").append(side.scriptsInstalled).append('\n');
+        KgWatchdog.Last kgLast = KgWatchdog.last(ctx);
+        out.append("kg_last: known=").append(kgLast.known)
+                .append(" pre=").append(kgLast.pre)
+                .append(" unlock=").append(kgLast.unlock)
+                .append(" err=").append(kgLast.err)
+                .append(" post=").append(kgLast.post)
+                .append(" parked=").append(kgLast.parked).append('\n');
         out.append("stats: ").append(Stats.snapshot()).append('\n');
         RootProbe.Result probe = RootProbe.probe();
         out.append("su: live=").append(probe.live).append(" detail=").append(probe.detail).append('\n');
@@ -42,6 +65,7 @@ final class Diagnostics {
         out.append("\n== boot.log ==\n").append(tail(new File(
                 deviceProtected(ctx).getFilesDir(), "boot.log"), 65536)).append('\n');
         out.append("\n== run.log ==\n").append(tail(new File(ctx.getFilesDir(), "run.log"), 131072)).append('\n');
+        out.append("\n== sup.log ==\n").append(tail(new File("/data/dfroot/log/sup.log"), 32768)).append('\n');
         if (out.length() > 262144) {
             return out.substring(out.length() - 262144);
         }

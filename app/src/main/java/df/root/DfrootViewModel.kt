@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -37,11 +38,17 @@ data class DfrootState(
     val managerInstalled: Boolean = false,
     val managerVersion: String = "",
     val managerName: String = "",
+    val managerPackage: String = "",
     val targetOk: Boolean = true,
     val targetDetail: String = "",
     val kgEnabled: Boolean = true,
     val kgState: Int = -1,
     val lastPass: String = "",
+    val chain: ChainStatus = ChainStatus.empty(),
+    val rootSide: RootSide = RootSide.empty(),
+    val kgLast: KgWatchdog.Last = KgWatchdog.emptyLast(),
+    val phase: String = "",
+    val runStartedAt: Long = 0L,
     val snackbar: String? = null,
 )
 
@@ -61,6 +68,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     private var managerInstalled = false
     private var managerVersion = ""
     private var managerName = ""
+    private var managerPackage = ""
     private var lastPassCheckedAt = 0L
     private var lastPassCache = ""
     private var lastProbeAt = 0L
@@ -83,7 +91,19 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
             val pass = lastPassLine()
             lastPassCache = pass
             lastPassCheckedAt = SystemClock.elapsedRealtime()
-            _state.update { it.copy(log = log, kgState = kg, lastPass = pass) }
+            // Materialize the switch state for the root supervisor. Missing
+            // file means "on"; the file only exists so a toggle off survives.
+            BootReceiver.setAutoIntent(context, BootReceiver.isAutoEnabled(context))
+            _state.update {
+                it.copy(
+                    log = log,
+                    kgState = kg,
+                    lastPass = pass,
+                    chain = ChainStatus.read(context),
+                    rootSide = RootSide.read(context),
+                    kgLast = KgWatchdog.last(context),
+                )
+            }
         }
         startProbe()
     }
@@ -139,6 +159,9 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 kgEnabled = KgWatchdog.enabled(context),
                 kgState = TextParse.kgState(Probes.prop("knox.kg.state")),
                 lastPass = pass,
+                chain = ChainStatus.read(context),
+                rootSide = RootSide.read(context),
+                kgLast = KgWatchdog.last(context),
             )
         }
         _state.update {
@@ -155,9 +178,13 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 managerInstalled = managerInstalled,
                 managerVersion = managerVersion,
                 managerName = managerName,
+                managerPackage = managerPackage,
                 kgEnabled = snapshot.kgEnabled,
                 kgState = snapshot.kgState,
                 lastPass = snapshot.lastPass,
+                chain = snapshot.chain,
+                rootSide = snapshot.rootSide,
+                kgLast = snapshot.kgLast,
             )
         }
     }
@@ -169,6 +196,9 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         val kgEnabled: Boolean,
         val kgState: Int,
         val lastPass: String,
+        val chain: ChainStatus,
+        val rootSide: RootSide,
+        val kgLast: KgWatchdog.Last,
     )
 
     fun runChain() {
@@ -185,7 +215,13 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
             return
         }
         KeepService.start(context)
-        _state.update { it.copy(running = true) }
+        _state.update {
+            it.copy(
+                running = true,
+                runStartedAt = SystemClock.elapsedRealtime(),
+                phase = context.getString(R.string.phase_starting),
+            )
+        }
         report("\n=== DFRoot a36xq / DirtyFrag CVE-2026-43284 ===\n")
 
         runJob = viewModelScope.launch {
@@ -233,6 +269,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
             else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
             PackageManager.DONT_KILL_APP,
         )
+        BootReceiver.setAutoIntent(context, enabled)
         report(context.getString(if (enabled) R.string.auto_enabled else R.string.auto_disabled) + "\n")
         _state.update { it.copy(autoEnabled = enabled) }
         if (enabled) {
@@ -251,6 +288,49 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         report(context.getString(if (enabled) R.string.kg_enabled else R.string.kg_disabled) + "\n")
     }
 
+    fun reboot() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val out = Runner.suScript(20L, "reboot")
+            if (out == null) {
+                try {
+                    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    pm.reboot(null)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "reboot: $t")
+                }
+            }
+        }
+    }
+
+    fun openManager() {
+        val pkg = _state.value.managerPackage
+        if (pkg.isEmpty()) {
+            snack(R.string.manager_absent)
+            return
+        }
+        try {
+            val intent = context.packageManager.getLaunchIntentForPackage(pkg)
+            if (intent == null) {
+                snack(R.string.manager_absent)
+                return
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } catch (t: Throwable) {
+            Log.w(TAG, "open manager: $t")
+        }
+    }
+
+    fun copySuCommand() {
+        try {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("su", "su -c id"))
+            snack(R.string.su_copied)
+        } catch (t: Throwable) {
+            Log.w(TAG, "copy su: $t")
+        }
+    }
+
     fun consumeSnackbar() {
         _state.update { it.copy(snackbar = null) }
     }
@@ -258,11 +338,37 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
     override fun report(msg: String) {
         Log.i(TAG, msg.trim())
         LogFiles.append(logFile, msg.toByteArray(), FILE_CAP, FILE_KEEP)
+        val phase = phaseFor(msg)
         _state.update { s ->
             var log = s.log + msg
             if (log.length > LOG_LIMIT) log = log.substring(log.length - LOG_KEEP)
-            s.copy(log = log)
+            s.copy(log = log, phase = phase ?: s.phase)
         }
+    }
+
+    /** Map the reporter's own stage lines to one human phase for the run card. */
+    private fun phaseFor(msg: String): String? {
+        val line = msg.trim()
+        val key = when {
+            line.startsWith("=== setup") -> R.string.phase_setup
+            line.startsWith("encap port") -> R.string.phase_socket
+            line.startsWith("spi:") -> R.string.phase_keys
+            line.startsWith("ksud staged") -> R.string.phase_stage
+            line.startsWith("=== exploit") -> R.string.phase_symbols
+            line.startsWith("* patch #1") -> R.string.phase_patch_crash
+            line.startsWith("* patch #2") -> R.string.phase_patch_vendor
+            line.startsWith("* patching") -> R.string.phase_patch_libs
+            line.startsWith("* triggering") -> R.string.phase_trigger
+            line.startsWith("stage1:") -> R.string.phase_stage1
+            line.startsWith("stage2: module loaded") -> R.string.phase_module
+            line.startsWith("stage2: launching ksud") -> R.string.phase_ksud
+            line.startsWith("***SUCCESS***") -> R.string.phase_success
+            line.startsWith("=== cleanup") -> R.string.phase_cleanup
+            line.startsWith("[overlay]") -> R.string.phase_overlay
+            line.startsWith("[kg") -> R.string.phase_kg
+            else -> null
+        }
+        return key?.let { context.getString(it) }
     }
 
     fun copyLog() {
@@ -347,7 +453,12 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
 
     private fun finishRun(message: String) {
         Runner.release()
-        _state.update { it.copy(running = false, snackbar = message) }
+        _state.update { it.copy(running = false, snackbar = message, phase = "", runStartedAt = 0L) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val chain = ChainStatus.read(context)
+            val side = RootSide.read(context)
+            _state.update { it.copy(chain = chain, rootSide = side) }
+        }
     }
 
     private fun loadPersistedLog(): String {
@@ -394,11 +505,13 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         managerInstalled = false
         managerVersion = ""
         managerName = ""
+        managerPackage = ""
         for ((pkg, name) in managers) {
             try {
                 val info = context.packageManager.getPackageInfo(pkg, 0)
                 managerInstalled = true
                 managerName = name
+                managerPackage = pkg
                 managerVersion = info.versionName ?: ""
                 return
             } catch (_: Throwable) {

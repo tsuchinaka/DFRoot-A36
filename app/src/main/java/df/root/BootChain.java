@@ -67,6 +67,13 @@ final class BootChain {
     private static int stageFails;
     private static long firstPassUptime = -1L;
 
+    /** Persisted result of the last pass that actually attempted the exploit. */
+    private static int lastRc = ChainStatus.NO_RC;
+    private static long lastMs;
+    private static long lastAt;
+    private static String lastAct = "";
+    private static int passRc = ChainStatus.NO_RC;
+
     private BootChain() {
     }
 
@@ -96,6 +103,7 @@ final class BootChain {
         Buffer log = new Buffer();
         long t0 = SystemClock.elapsedRealtime();
         boolean claimed = false;
+        passRc = ChainStatus.NO_RC;
         try {
             if (!BootReceiver.isAutoEnabled(appCtx)) {
                 Log.i(TAG, "chain: auto disabled, ignoring " + act);
@@ -117,8 +125,14 @@ final class BootChain {
             if (claimed) {
                 Runner.release();
             }
-            log.report("chain: total " + (SystemClock.elapsedRealtime() - t0) + "ms "
-                    + Stats.snapshot() + "\n");
+            long total = SystemClock.elapsedRealtime() - t0;
+            if (passRc != ChainStatus.NO_RC) {
+                lastRc = passRc;
+                lastMs = total;
+                lastAct = act;
+                lastAt = SystemClock.elapsedRealtime();
+            }
+            log.report("chain: total " + total + "ms " + Stats.snapshot() + "\n");
             saveStage(deCtx);
             log.flush(appCtx, deCtx);
         }
@@ -262,6 +276,7 @@ final class BootChain {
             }
         }
         log.report("chain: attempts " + (SystemClock.elapsedRealtime() - attemptStart) + "ms\n");
+        passRc = rc;
 
         if (RootProbe.probe().live) {
             markRooted(appCtx, deCtx, log, t0);
@@ -309,6 +324,7 @@ final class BootChain {
         ladder = 0;
         gatePending = 0;
         stageFails = 0;
+        passRc = 0;
         KeepService.cancelRetry(appCtx);
         nextRetryAt = 0L;
         log.report("chain: rooted " + (SystemClock.elapsedRealtime() - t0) + "ms\n");
@@ -449,6 +465,11 @@ final class BootChain {
             gatePending = 0;
             gateOpen = false;
             stageFails = 0;
+            lastRc = ChainStatus.NO_RC;
+            lastMs = 0L;
+            lastAt = 0L;
+            lastAct = "";
+            nextRetryAt = 0L;
             firstPassUptime = SystemClock.elapsedRealtime();
         } else {
             stageBootId = current;
@@ -457,6 +478,11 @@ final class BootChain {
             gatePending = parse(map.get("pending"));
             gateOpen = "1".equals(map.get("gate_open"));
             stageFails = parse(map.get("fails"));
+            lastRc = (int) parseLong(map.get("last_rc"), ChainStatus.NO_RC);
+            lastMs = parseLong(map.get("last_ms"), 0L);
+            lastAt = parseLong(map.get("last_at"), 0L);
+            lastAct = map.getOrDefault("last_act", "");
+            nextRetryAt = parseLong(map.get("retry_at"), 0L);
             firstPassUptime = parseLong(map.get("first"), -1L);
         }
     }
@@ -473,6 +499,11 @@ final class BootChain {
                         + "pending=" + gatePending + "\n"
                         + "gate_open=" + (gateOpen ? "1" : "0") + "\n"
                         + "fails=" + stageFails + "\n"
+                        + "retry_at=" + nextRetryAt + "\n"
+                        + "last_rc=" + lastRc + "\n"
+                        + "last_ms=" + lastMs + "\n"
+                        + "last_act=" + lastAct + "\n"
+                        + "last_at=" + lastAt + "\n"
                         + "first=" + firstPassUptime + "\n")
                         .getBytes(StandardCharsets.UTF_8));
             } finally {
