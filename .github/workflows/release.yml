@@ -10,27 +10,76 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
-      - uses: android-actions/setup-android@v3
+      - name: Android SDK
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK_ROOT"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort | tail -n 1)
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-37.0" "build-tools;37.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
       - name: Keystore
-        run: ./create-keystore.sh
+        env:
+          KEYSTORE_B64: ${{ secrets.DFROOT_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > app/keystore.jks
+          else
+            ./create-keystore.sh
+          fi
       - name: Unit tests
         run: ./gradlew :app:test --no-daemon --console=plain
       - name: Assemble release
-        run: ./gradlew :app:assembleRelease --no-daemon --console=plain
+        env:
+          DFROOT_STORE_PASSWORD: ${{ secrets.DFROOT_STORE_PASSWORD }}
+          DFROOT_KEY_ALIAS: ${{ secrets.DFROOT_KEY_ALIAS }}
+          DFROOT_KEY_PASSWORD: ${{ secrets.DFROOT_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --no-daemon --console=plain --stacktrace
       - name: Verify artifacts
         run: ./tools/check-build.sh
       - name: Stage asset
-        run: cp app/build/outputs/apk/release/app-release.apk dfroot.apk
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk dfroot.apk
+          sha256sum dfroot.apk > SHA256SUMS
+          cat SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dfroot.apk \
+          cat > notes.md <<'NOTES'
+          Boot persistence hardening: the chain can now re-enter stage 2 after a
+          failed pass in the same boot, stale /dev/dfm* markers no longer poison
+          later retries, and the keep service runs in its own process with a
+          root-side supervisor plus an independent watchdog.
+
+          Native
+          - libc.S drops the /dev/df mutex on every hard stage-2 failure and
+            treats finit_module -EEXIST as loaded.
+          - exp.c snapshots marker ctimes before the trigger, reads each chunk
+            once for retries, forks instead of clone(CLONE_VM|CLONE_VFORK), and
+            restores crash_dump64 and libbinderdebug.so after the chain.
+
+          App
+          - File-locked chain claim across processes; KeepService in :chain.
+          - BootChain uses tryLock, a bounded 60 s mutex wait, needs-reboot and
+            no-allowlist states, and a slow backoff after repeated failures.
+          - Supervisor v2 re-enables its own components, clears a force-stopped
+            package, and clears a poisoned mutex when su is dead.
+          - KG pass moved off the keep tick.
+          - RootReceiver queues the pass instead of running it in a broadcast.
+
+          Not tested on hardware. Chain B (CVE-2026-43499) is not included.
+          NOTES
+          printf '\n%s\n' "$(cat SHA256SUMS)" >> notes.md
+          gh release create "$GITHUB_REF_NAME" dfroot.apk SHA256SUMS \
             --title "DFRoot A36 $GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file notes.md
