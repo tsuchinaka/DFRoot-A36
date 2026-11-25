@@ -29,7 +29,7 @@ Android release and kernel major.minor.
 ## Install
 
 ```sh
-adb install -r dfroot-4.1.0-perf.apk
+adb install -r dfroot.apk
 ```
 
 If the old install uses a different signing key, uninstall it first. That wipes
