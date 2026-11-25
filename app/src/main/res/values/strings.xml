@@ -12,7 +12,6 @@
     <string name="home_big_live">LIVE</string>
     <string name="home_big_idle">OFFLINE</string>
     <string name="home_big_installed">root installed, KernelSU won\'t answer this app</string>
-    <string name="home_auto_note">Roots on boot and unlock. Retries on failure.</string>
 
     <string name="stat_kernel">Kernel</string>
     <string name="stat_device">Device</string>
