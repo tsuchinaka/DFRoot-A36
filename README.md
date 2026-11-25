@@ -9,10 +9,10 @@ Temporary KernelSU root for the Samsung Galaxy A36 5G (`SM-A366E`) using
 DirtyFrag (`CVE-2026-43284`). Tap one button, `su` starts working, no reboot and
 no cable. It can also root on boot/unlock and re-apply the Knox Guard unlock.
 
-Current release: [`v4.1.0-perf`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.1.0-perf)
-- APK: `dfroot-4.1.0-perf.apk`
-- Version: `4.1.0-perf` (`versionCode 30`), arm64 only
-- SHA-256: `cd07f6c09b7e5fdee2601c6332fbfc2e584ddb1c1a3ce864c0f695ee760e790d`
+Current release: [`v4.2.0-persist`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.2.0-persist)
+- APK: `dfroot.apk`
+- Version: `4.2.0-persist` (`versionCode 31`), arm64 only
+- SHA-256: `c005e55ef079a9ce5e432deae149b3b6ca750a4ebf45b7f01ac01f5fe20964cf`
 - Signed with the v4.0 key, so it updates in place
 - CI build/tests passed; this revision was not tested on hardware
 
@@ -55,6 +55,24 @@ adb logcat -s dfroot
 ```
 
 The receiver requires `android.permission.DUMP`; ordinary apps cannot call it.
+
+## What changed in 4.2
+
+- A failed stage no longer poisons the boot: the mutex `/dev/df` is released on
+  every hard stage-2 failure, `finit_module -EEXIST` counts as loaded, and
+  stale `/dev/dfm*` markers from an earlier pass are ignored.
+- Each chunk is read once and reused for retries instead of recomputing IVs
+  against half-patched page cache; `crash_dump64` and `libbinderdebug.so` are
+  restored after the chain.
+- The keep service runs in `:chain` with a file-locked chain claim, so the UI
+  cannot start a second exploit over a boot pass.
+- `BootChain` stopped holding a class monitor for minutes: `tryLock`, a bounded
+  60 s wait on a held mutex, explicit `needs-reboot` and `no-allowlist` states,
+  and a 30-minute backoff after six failures in one boot.
+- Root-side supervisor v2 re-enables its own components, clears a force-stopped
+  package, clears a poisoned mutex while `su` is dead, and has an independent
+  `dfroot-watch.sh` respawner.
+- The Knox Guard pass no longer blocks the keep tick.
 
 ## What changed in 4.1
 
@@ -100,9 +118,11 @@ repository secrets. Without them, publish the locally signed APK manually.
 
 - Return code `0` means ksud was launched, not that root is live. The app still
   probes `su`.
-- The stage-1 mutex is `/dev/df`. If a run dies halfway, later boot passes wait
-  for `su` instead of re-exploiting; only a reboot clears it.
-- Manual reruns can see stale `/dev/dfm*` markers from a previous pass.
+- The stage-1 mutex is `/dev/df`. A dead stage releases it before exiting, so a
+  later pass in the same boot can retry; `BootChain` reports `needs-reboot` only
+  when su is dead and the mutex is still held.
+- Markers are compared by creation time, so `/dev/dfm*` files from a previous
+  pass do not look like results of the current one.
 - Never `rmmod kernelsu`; it panics the kernel.
 - The Knox Guard TA unlock can write a one-way fuse. Treat it as irreversible.
 - Patch KO images only with the Samsung DDK, and keep their provenance.
