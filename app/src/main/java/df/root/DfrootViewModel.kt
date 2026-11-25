@@ -44,9 +44,9 @@ data class DfrootState(
     val kgEnabled: Boolean = true,
     val kgState: Int = -1,
     val lastPass: String = "",
-    val chain: ChainStatus = ChainStatus.empty(),
-    val rootSide: RootSide = RootSide.empty(),
-    val kgLast: KgWatchdog.Last = KgWatchdog.emptyLast(),
+    val chain: ChainUi = ChainUi(),
+    val rootSide: RootUi = RootUi(),
+    val kgLast: KgUi = KgUi(),
     val phase: String = "",
     val runStartedAt: Long = 0L,
     val snackbar: String? = null,
@@ -99,9 +99,9 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                     log = log,
                     kgState = kg,
                     lastPass = pass,
-                    chain = ChainStatus.read(context),
-                    rootSide = RootSide.read(context),
-                    kgLast = KgWatchdog.last(context),
+                    chain = readChain(context),
+                    rootSide = readRootSide(context),
+                    kgLast = readKgLast(context),
                 )
             }
         }
@@ -159,9 +159,9 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 kgEnabled = KgWatchdog.enabled(context),
                 kgState = TextParse.kgState(Probes.prop("knox.kg.state")),
                 lastPass = pass,
-                chain = ChainStatus.read(context),
-                rootSide = RootSide.read(context),
-                kgLast = KgWatchdog.last(context),
+                chain = readChain(context),
+                rootSide = readRootSide(context),
+                kgLast = readKgLast(context),
             )
         }
         _state.update {
@@ -196,9 +196,9 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         val kgEnabled: Boolean,
         val kgState: Int,
         val lastPass: String,
-        val chain: ChainStatus,
-        val rootSide: RootSide,
-        val kgLast: KgWatchdog.Last,
+        val chain: ChainUi,
+        val rootSide: RootUi,
+        val kgLast: KgUi,
     )
 
     fun runChain() {
@@ -455,8 +455,8 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         Runner.release()
         _state.update { it.copy(running = false, snackbar = message, phase = "", runStartedAt = 0L) }
         viewModelScope.launch(Dispatchers.IO) {
-            val chain = ChainStatus.read(context)
-            val side = RootSide.read(context)
+            val chain = readChain(context)
+            val side = readRootSide(context)
             _state.update { it.copy(chain = chain, rootSide = side) }
         }
     }
