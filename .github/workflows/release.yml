@@ -55,31 +55,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cat > notes.md <<'NOTES'
-          Boot persistence hardening: the chain can now re-enter stage 2 after a
-          failed pass in the same boot, stale /dev/dfm* markers no longer poison
-          later retries, and the keep service runs in its own process with a
-          root-side supervisor plus an independent watchdog.
-
-          Native
-          - libc.S drops the /dev/df mutex on every hard stage-2 failure and
-            treats finit_module -EEXIST as loaded.
-          - exp.c snapshots marker ctimes before the trigger, reads each chunk
-            once for retries, forks instead of clone(CLONE_VM|CLONE_VFORK), and
-            restores crash_dump64 and libbinderdebug.so after the chain.
-
-          App
-          - File-locked chain claim across processes; KeepService in :chain.
-          - BootChain uses tryLock, a bounded 60 s mutex wait, needs-reboot and
-            no-allowlist states, and a slow backoff after repeated failures.
-          - Supervisor v2 re-enables its own components, clears a force-stopped
-            package, and clears a poisoned mutex when su is dead.
-          - KG pass moved off the keep tick.
-          - RootReceiver queues the pass instead of running it in a broadcast.
-
-          Not tested on hardware. Chain B (CVE-2026-43499) is not included.
-          NOTES
-          printf '\n%s\n' "$(cat SHA256SUMS)" >> notes.md
           gh release create "$GITHUB_REF_NAME" dfroot.apk SHA256SUMS \
             --title "DFRoot A36 $GITHUB_REF_NAME" \
-            --notes-file notes.md
+            --generate-notes
