@@ -9,10 +9,10 @@ Temporary KernelSU root for the Samsung Galaxy A36 5G (`SM-A366E`) using
 DirtyFrag (`CVE-2026-43284`). Tap one button, `su` starts working, no reboot and
 no cable. It can also root on boot/unlock and re-apply the Knox Guard unlock.
 
-Current release: [`v4.3.0-ui`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.3.0-ui)
+Current release: [`v4.3.1-ui`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.3.1-ui)
 - APK: `dfroot.apk`
-- Version: `4.3.0-ui` (`versionCode 32`), arm64 only
-- SHA-256: `09f88f23fe02fc92237ec885537a175b709e6872f1ed6c2af31eeb78ce99652e`
+- Version: `4.3.1-ui` (`versionCode 33`), arm64 only
+- SHA-256: `4ebfa24721a02756badb761ec13e849e74bc863c4e96fcc1a83198983f707e41`
 - Signed with the v4.0 key, so it updates in place
 - CI build/tests passed; this revision was not tested on hardware
 
@@ -55,6 +55,23 @@ adb logcat -s dfroot
 ```
 
 The receiver requires `android.permission.DUMP`; ordinary apps cannot call it.
+
+## What changed in 4.3.1
+
+- The root-side card no longer reads root-owned `/data/dfroot`, `/data/adb` and
+  `/sys/module` from the app process: SELinux denies those paths to untrusted_app,
+  so a healthy supervisor was displayed as absent and the heartbeat as stale.
+- The supervisor now publishes one atomic status line to `/dev/dfroot-status`
+  (tmpfs, mode 0644, restorecon'd) with the boot id, uptime heartbeat, supervisor
+  and watchdog pids, scripts/module/mutex/su flags.
+- Unpublished state is `unknown`, not `absent`. Only `/dev/df` is probed directly
+  because it is readable; a held mutex is normal after the exploit runs.
+- `PostRoot.heartbeatFresh()` uses the published status, so the keep tick no
+  longer pays a `su` launch every cycle just because it cannot read
+  `/data/dfroot/run/heartbeat`.
+- An app update kills the old versioned supervisor and starts the new one, so
+  the publisher actually changes on upgrade instead of leaving 4.3.0 running.
+- Diagnostics includes the published flag and raw status line.
 
 ## What changed in 4.3
 
