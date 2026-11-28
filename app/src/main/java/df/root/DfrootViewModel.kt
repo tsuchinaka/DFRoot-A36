@@ -100,7 +100,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                     kgState = kg,
                     lastPass = pass,
                     chain = readChain(context),
-                    rootSide = readRootSide(context),
+                    rootSide = readRootSide(),
                     kgLast = readKgLast(context),
                 )
             }
@@ -160,7 +160,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
                 kgState = TextParse.kgState(Probes.prop("knox.kg.state")),
                 lastPass = pass,
                 chain = readChain(context),
-                rootSide = readRootSide(context),
+                rootSide = readRootSide(),
                 kgLast = readKgLast(context),
             )
         }
@@ -456,7 +456,7 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         _state.update { it.copy(running = false, snackbar = message, phase = "", runStartedAt = 0L) }
         viewModelScope.launch(Dispatchers.IO) {
             val chain = readChain(context)
-            val side = readRootSide(context)
+            val side = readRootSide()
             _state.update { it.copy(chain = chain, rootSide = side) }
         }
     }

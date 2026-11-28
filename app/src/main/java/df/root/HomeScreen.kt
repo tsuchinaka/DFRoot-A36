@@ -315,49 +315,60 @@ fun HomeScreen(
                         color = colors.onSurfaceVariant,
                     )
                 } else {
+                    val known = side.published
+                    if (!known) {
+                        Caption(stringResource(R.string.root_side_unpublished))
+                        Spacer(Modifier.height(8.dp))
+                    }
                     DotRow(
                         label = stringResource(R.string.root_side_heartbeat),
-                        value = if (side.heartbeatFresh) {
-                            stringResource(R.string.state_fresh, side.heartbeatAgeSec)
-                        } else {
-                            stringResource(R.string.state_stale)
+                        value = when {
+                            !known -> stringResource(R.string.state_unknown)
+                            side.heartbeatFresh -> stringResource(R.string.state_fresh, side.heartbeatAgeSec)
+                            else -> stringResource(R.string.state_stale)
                         },
-                        ok = side.heartbeatFresh,
+                        ok = if (known) side.heartbeatFresh else null,
                     )
                     DotRow(
                         label = stringResource(R.string.root_side_supervisor),
-                        value = stringResource(
-                            if (side.supervisorAlive) R.string.state_running else R.string.state_absent,
-                        ),
-                        ok = side.supervisorAlive,
+                        value = if (!known) {
+                            stringResource(R.string.state_unknown)
+                        } else {
+                            stringResource(if (side.supervisorAlive) R.string.state_running else R.string.state_absent)
+                        },
+                        ok = if (known) side.supervisorAlive else null,
                     )
                     DotRow(
                         label = stringResource(R.string.root_side_watchdog),
-                        value = stringResource(
-                            if (side.watchdogAlive) R.string.state_running else R.string.state_absent,
-                        ),
-                        ok = side.watchdogAlive,
+                        value = if (!known) {
+                            stringResource(R.string.state_unknown)
+                        } else {
+                            stringResource(if (side.watchdogAlive) R.string.state_running else R.string.state_absent)
+                        },
+                        ok = if (known) side.watchdogAlive else null,
                     )
                     DotRow(
                         label = stringResource(R.string.root_side_module),
-                        value = stringResource(
-                            if (side.moduleLoaded) R.string.state_loaded else R.string.state_absent,
-                        ),
-                        ok = side.moduleLoaded,
+                        value = if (!known) {
+                            stringResource(R.string.state_unknown)
+                        } else {
+                            stringResource(if (side.moduleLoaded) R.string.state_loaded else R.string.state_absent)
+                        },
+                        ok = if (known) side.moduleLoaded else null,
                     )
                     DotRow(
                         label = stringResource(R.string.root_side_mutex),
-                        value = stringResource(
-                            if (side.mutexHeld) R.string.state_held else R.string.state_absent,
-                        ),
+                        value = stringResource(if (side.mutexHeld) R.string.state_held else R.string.state_absent),
                         ok = !side.mutexHeld || side.supervisorAlive,
                     )
                     DotRow(
                         label = stringResource(R.string.root_side_scripts),
-                        value = stringResource(
-                            if (side.scriptsInstalled) R.string.state_installed else R.string.state_missing,
-                        ),
-                        ok = side.scriptsInstalled,
+                        value = if (!known) {
+                            stringResource(R.string.state_unknown)
+                        } else {
+                            stringResource(if (side.scriptsInstalled) R.string.state_installed else R.string.state_missing)
+                        },
+                        ok = if (known) side.scriptsInstalled else null,
                     )
                 }
             }
@@ -470,15 +481,20 @@ private fun StatusLine(text: String, color: Color) {
 }
 
 @Composable
-private fun DotRow(label: String, value: String, ok: Boolean) {
+private fun DotRow(label: String, value: String, ok: Boolean?) {
     val status = LocalStatusColors.current
+    val color = when (ok) {
+        true -> status.ok
+        false -> status.bad
+        null -> MaterialTheme.colorScheme.outline
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Dot(if (ok) status.ok else MaterialTheme.colorScheme.outline)
+        Dot(color)
         Spacer(Modifier.width(10.dp))
         Text(
             text = label,

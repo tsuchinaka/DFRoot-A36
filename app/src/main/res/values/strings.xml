@@ -110,7 +110,7 @@
     <string name="last_pass_title">Last pass</string>
     <string name="last_pass_value">rc=%1$d · %2$d s · %3$s</string>
 
-    <string name="root_side_empty">No root side this boot. The five rows below appear once the supervisor is running.</string>
+    <string name="root_side_empty">No root side this boot. The supervisor publishes these rows once it starts.</string>
     <string name="root_side_heartbeat">Heartbeat</string>
     <string name="root_side_supervisor">Supervisor</string>
     <string name="root_side_watchdog">Watchdog</string>
@@ -125,6 +125,8 @@
     <string name="state_held">held</string>
     <string name="state_installed">installed</string>
     <string name="state_missing">missing</string>
+    <string name="state_unknown">unknown</string>
+    <string name="root_side_unpublished">The supervisor has not published state this boot. It writes /dev/dfroot-status as root, because the app cannot read root-owned paths; until it does, only the exploit mutex is readable.</string>
 
     <string name="action_reboot">Reboot</string>
     <string name="action_open_manager">Open manager</string>

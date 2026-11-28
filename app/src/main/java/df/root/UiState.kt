@@ -23,6 +23,7 @@ data class ChainUi(
 }
 
 data class RootUi(
+    val published: Boolean = false,
     val heartbeatFresh: Boolean = false,
     val heartbeatAgeSec: Long = -1,
     val supervisorAlive: Boolean = false,
@@ -31,7 +32,7 @@ data class RootUi(
     val mutexHeld: Boolean = false,
     val scriptsInstalled: Boolean = false,
 ) {
-    fun any(): Boolean = scriptsInstalled || moduleLoaded || mutexHeld || supervisorAlive
+    fun any(): Boolean = published || scriptsInstalled || moduleLoaded || mutexHeld || supervisorAlive
 }
 
 data class KgUi(
@@ -53,6 +54,7 @@ private fun ChainStatus.toUi() = ChainUi(
 )
 
 private fun RootSide.toUi() = RootUi(
+    published = published,
     heartbeatFresh = heartbeatFresh,
     heartbeatAgeSec = heartbeatAgeSec,
     supervisorAlive = supervisorAlive,
@@ -71,5 +73,5 @@ private fun KgWatchdog.Last.toUi() = KgUi(
 )
 
 internal fun readChain(ctx: android.content.Context): ChainUi = ChainStatus.read(ctx).toUi()
-internal fun readRootSide(ctx: android.content.Context): RootUi = RootSide.read(ctx).toUi()
+internal fun readRootSide(): RootUi = RootSide.read().toUi()
 internal fun readKgLast(ctx: android.content.Context): KgUi = KgWatchdog.last(ctx).toUi()

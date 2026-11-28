@@ -113,6 +113,17 @@ final class PostRoot {
                     + "  done\n"
                     + "}\n"
                     + "su_ok() { su -c id 2>/dev/null | grep -q 'uid=0'; }\n"
+                    + "STATUS=/dev/dfroot-status\n"
+                    + "publish() {\n"
+                    + "  spid=$(cut -d' ' -f1 \"$RUN/sup.pid\" 2>/dev/null)\n"
+                    + "  wpid=$(cut -d' ' -f1 \"$RUN/watch.pid\" 2>/dev/null)\n"
+                    + "  mod=0\n"
+                    + "  if grep -q '^kernelsu' /proc/modules 2>/dev/null; then mod=1; fi\n"
+                    + "  sc=0; [ -f /data/adb/service.d/dfroot-sup.sh ] && sc=1\n"
+                    + "  mu=0; [ -e /dev/df ] && mu=1\n"
+                    + "  su=0; [ \"$(id -u)\" = 0 ] && su=1\n"
+                    + "  printf 'boot=%s hb=%s sup=%s watch=%s scripts=%s module=%s mutex=%s su=%s\\n' \"$START_BOOT\" \"$(cut -d' ' -f1 /proc/uptime)\" \"$spid\" \"$wpid\" \"$sc\" \"$mod\" \"$mu\" \"$su\" > \"${STATUS}.tmp\" 2>/dev/null && chmod 644 \"${STATUS}.tmp\" 2>/dev/null && mv \"${STATUS}.tmp\" \"$STATUS\" 2>/dev/null && restorecon \"$STATUS\" 2>/dev/null\n"
+                    + "}\n"
                     + "revive_app() {\n"
                     + "  am start -n df.root/.MainActivity >/dev/null 2>&1\n"
                     + "  am start-foreground-service -n df.root/.KeepService >/dev/null 2>&1\n"
@@ -194,6 +205,7 @@ final class PostRoot {
                     + "    exit 0\n"
                     + "  fi\n"
                     + "  rotate\n"
+                    + "  publish\n"
                     + "  clear_poison\n"
                     + "  pidof df.root >/dev/null 2>&1 || revive_app\n"
                     + "  n=$((n + 1))\n"
@@ -241,6 +253,12 @@ final class PostRoot {
     }
 
     private static boolean heartbeatFresh() {
+        RootSide side = RootSide.read();
+        if (side.published) {
+            return side.heartbeatFresh;
+        }
+        // Supervisors older than 4.3.1 only wrote a heartbeat file, and the app
+        // usually cannot read it: this fallback is for them, not the new path.
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 new FileInputStream(HEARTBEAT), StandardCharsets.UTF_8))) {
             String line = reader.readLine();
@@ -313,10 +331,14 @@ final class PostRoot {
                 + "rm -f /data/adb/service.d/dfroot-keep.sh\n"
                 + "setsid sh /data/adb/service.d/dfroot-watch.sh"
                 + " >>/data/dfroot/log/sup.log 2>&1 </dev/null &\n"
+                + "want='" + runName + "'\n"
                 + "if [ -f " + RUN_DIR + "/sup.pid ]; then\n"
                 + "  read old oboot < " + RUN_DIR + "/sup.pid 2>/dev/null\n"
                 + "  now=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n"
-                + "  if [ -n \"$old\" ] && [ -d \"/proc/$old\" ] && [ \"$oboot\" = \"$now\" ]; then echo running; exit 0; fi\n"
+                + "  if [ -n \"$old\" ] && [ -d \"/proc/$old\" ] && [ \"$oboot\" = \"$now\" ]; then\n"
+                + "    if grep -aq \"$want\" \"/proc/$old/cmdline\" 2>/dev/null; then echo running; exit 0; fi\n"
+                + "    kill \"$old\" 2>/dev/null; sleep 1; kill -9 \"$old\" 2>/dev/null\n"
+                + "  fi\n"
                 + "fi\n"
                 + "setsid sh /data/adb/service.d/dfroot-sup.sh"
                 + " >>/data/dfroot/log/sup.log 2>&1 </dev/null &\n"

@@ -41,8 +41,9 @@ final class Diagnostics {
                 .append(" last_act=").append(chain.lastAct)
                 .append(" retry_in_ms=").append(chain.retryInMs())
                 .append(" same_boot=").append(chain.sameBoot).append('\n');
-        RootSide side = RootSide.read(ctx);
-        out.append("root_side: heartbeat=").append(side.heartbeatFresh)
+        RootSide side = RootSide.read();
+        out.append("root_side: published=").append(side.published)
+                .append(" heartbeat=").append(side.heartbeatFresh)
                 .append(" age_s=").append(side.heartbeatAgeSec)
                 .append(" supervisor=").append(side.supervisorAlive)
                 .append(" watchdog=").append(side.watchdogAlive)
@@ -66,6 +67,7 @@ final class Diagnostics {
                 deviceProtected(ctx).getFilesDir(), "boot.log"), 65536)).append('\n');
         out.append("\n== run.log ==\n").append(tail(new File(ctx.getFilesDir(), "run.log"), 131072)).append('\n');
         out.append("\n== sup.log ==\n").append(tail(new File("/data/dfroot/log/sup.log"), 32768)).append('\n');
+        out.append("\n== root-side status ==\n").append(tail(new File("/dev/dfroot-status"), 4096)).append('\n');
         if (out.length() > 262144) {
             return out.substring(out.length() - 262144);
         }

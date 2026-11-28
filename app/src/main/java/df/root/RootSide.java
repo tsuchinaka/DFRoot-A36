@@ -1,41 +1,44 @@
 package df.root;
 
-import android.content.Context;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
- * What the root side actually looks like right now, read from the files the
- * supervisor publishes. The app process is not root and cannot ask it
- * anything, so these five paths are the whole observable surface:
+ * What the root side looks like right now.
  *
- *   /data/dfroot/run/heartbeat   uptime seconds, rewritten every 30 s
- *   /data/dfroot/run/sup.pid     "pid boot_id" of the supervisor
- *   /data/dfroot/run/watch.pid   "pid boot_id" of the watchdog
- *   /sys/module/kernelsu         the module is in the kernel
- *   /dev/df                      the stage-1 mutex of this boot
+ * The app is untrusted_app and cannot read /data/dfroot, /data/adb or most of
+ * /sys: SELinux denies those paths, so probing them from here reports "absent"
+ * for a perfectly healthy root side. Instead the supervisor — which is root —
+ * publishes one line into /dev/dfroot-status, a tmpfs file the app can read:
+ *
+ *   boot=<id> hb=<uptime> sup=<pid> watch=<pid>
+ *   scripts=<0|1> module=<0|1> mutex=<0|1> su=<0|1>
+ *
+ * The file disappears on reboot, so it can never report a previous boot. When
+ * it is missing the state is UNKNOWN, not "absent": the supervisor may simply
+ * not have published yet this boot.
  */
 final class RootSide {
 
-    private static final String TAG = "dfroot";
-    private static final String RUN = "/data/dfroot/run";
-    private static final String HEARTBEAT = RUN + "/heartbeat";
-    private static final String SUP_PID = RUN + "/sup.pid";
-    private static final String WATCH_PID = RUN + "/watch.pid";
-    private static final String LOADER = "/data/adb/service.d/dfroot-sup.sh";
+    private static final String STATUS = "/dev/dfroot-status";
     private static final long FRESH_MS = 90000L;
 
+    boolean published;
     boolean heartbeatFresh;
     long heartbeatAgeSec = -1;
+    int supervisorPid;
+    int watchdogPid;
     boolean supervisorAlive;
     boolean watchdogAlive;
     boolean moduleLoaded;
     boolean mutexHeld;
     boolean scriptsInstalled;
+    boolean rootProcess;
 
     private RootSide() {
     }
@@ -44,15 +47,29 @@ final class RootSide {
         return new RootSide();
     }
 
-    static RootSide read(Context ctx) {
+    static RootSide read() {
         RootSide s = new RootSide();
-        s.scriptsInstalled = new File(LOADER).isFile();
-        s.moduleLoaded = new File("/sys/module/kernelsu").isDirectory();
+        // /dev/df is world-searchable tmpfs: this one path is readable even
+        // while everything else is denied.
         s.mutexHeld = new File("/dev/df").exists();
-        s.supervisorAlive = pidMatchesBoot(SUP_PID);
-        s.watchdogAlive = pidMatchesBoot(WATCH_PID);
 
-        double beat = readBeat();
+        Map<String, String> map = readStatus();
+        String boot = BootId.current();
+        if (map.isEmpty() || boot.isEmpty() || !boot.equals(map.get("boot"))) {
+            return s;
+        }
+        s.published = true;
+        s.scriptsInstalled = "1".equals(map.get("scripts"));
+        s.moduleLoaded = "1".equals(map.get("module"));
+        s.rootProcess = "1".equals(map.get("su"));
+        s.supervisorPid = (int) parse(map.get("sup"));
+        s.watchdogPid = (int) parse(map.get("watch"));
+        s.supervisorAlive = s.supervisorPid > 0
+                && new File("/proc/" + s.supervisorPid).isDirectory();
+        s.watchdogAlive = s.watchdogPid > 0
+                && new File("/proc/" + s.watchdogPid).isDirectory();
+
+        double beat = parseDouble(map.get("hb"));
         double now = BootId.uptime();
         if (beat >= 0 && now >= 0) {
             double age = now - beat;
@@ -62,38 +79,42 @@ final class RootSide {
         return s;
     }
 
-    private static double readBeat() {
+    private static Map<String, String> readStatus() {
+        Map<String, String> map = new HashMap<>();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                new FileInputStream(HEARTBEAT), StandardCharsets.UTF_8))) {
+                new FileInputStream(STATUS), StandardCharsets.UTF_8))) {
             String line = reader.readLine();
-            return line == null ? -1 : Double.parseDouble(line.trim());
+            if (line == null) {
+                return map;
+            }
+            for (String token : line.trim().split("\\s+")) {
+                int eq = token.indexOf('=');
+                if (eq > 0) {
+                    map.put(token.substring(0, eq), token.substring(eq + 1));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return map;
+    }
+
+    private static long parse(String value) {
+        try {
+            return Long.parseLong(value == null ? "" : value.trim());
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    private static double parseDouble(String value) {
+        try {
+            return Double.parseDouble(value == null ? "" : value.trim());
         } catch (Throwable t) {
             return -1;
         }
     }
 
-    /**
-     * The pid file carries the boot id: a recycled pid from a previous boot
-     * must not read as "running".
-     */
-    private static boolean pidMatchesBoot(String path) {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                new FileInputStream(path), StandardCharsets.UTF_8))) {
-            String line = reader.readLine();
-            if (line == null) {
-                return false;
-            }
-            String[] parts = line.trim().split("\\s+");
-            if (parts.length < 2 || !parts[1].equals(BootId.current())) {
-                return false;
-            }
-            return new File("/proc/" + parts[0]).isDirectory();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
     boolean any() {
-        return scriptsInstalled || moduleLoaded || mutexHeld || supervisorAlive;
+        return published || mutexHeld;
     }
 }
