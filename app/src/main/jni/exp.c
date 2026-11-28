@@ -304,7 +304,8 @@ static int open_src_pipe(const char *path, int file_fd, off_t offset, size_t n,
  */
 static int patch_file_cbc_ex(const char *path, const char *payload, size_t len,
                              size_t foff, int use_helper, unsigned char *save,
-                             struct Reporter *reporter) {
+                             size_t *save_len, struct Reporter *reporter) {
+    if (save_len) *save_len = 0;
     if (len % 16 != 0) {
         REPORTLN("patch_file_cbc: len=%zu not multiple of 16", len);
         return -1;
@@ -336,7 +337,10 @@ static int patch_file_cbc_ex(const char *path, const char *payload, size_t len,
             rc = -1;
             break;
         }
-        if (save) memcpy(save + base, old_buf, n);
+        if (save) {
+            memcpy(save + base, old_buf, n);
+            if (save_len) *save_len += n;
+        }
 
         int chunk_ok = 0;
         for (int attempt = 1; attempt <= 2 && !chunk_ok; attempt++) {
@@ -408,7 +412,7 @@ static int patch_file_cbc_ex(const char *path, const char *payload, size_t len,
 
 static int patch_file_cbc(const char *path, const char *payload, size_t len,
                           size_t foff, int use_helper, struct Reporter *reporter) {
-    return patch_file_cbc_ex(path, payload, len, foff, use_helper, NULL, reporter);
+    return patch_file_cbc_ex(path, payload, len, foff, use_helper, NULL, NULL, reporter);
 }
 
 /* ---- KO and splicehelper blobs (identical layout to DFReroot) ---- */
@@ -583,9 +587,9 @@ static int patch_ko(struct Reporter *reporter) {
         free(sh_buf);
         return -1;
     }
-    g_crash_len = sh_len_padded;
+    g_crash_len = 0;
     int ret = patch_file_cbc_ex(kCrashDump, sh_buf, sh_len_padded, 0, 0,
-                                g_crash_orig, reporter);
+                                g_crash_orig, &g_crash_len, reporter);
     free(sh_buf);
     if (ret) {
         REPORTLN("patch #1 failed: %d", ret);
@@ -607,9 +611,9 @@ static int patch_ko(struct Reporter *reporter) {
         ret = -1;
         goto restore_crash;
     }
-    g_vendor_len = ko_len_padded;
+    g_vendor_len = 0;
     ret = patch_file_cbc_ex(target_lib_path, ko_buf, ko_len_padded, 0, 1,
-                            g_vendor_orig, reporter);
+                            g_vendor_orig, &g_vendor_len, reporter);
     free(ko_buf);
     if (ret) REPORTLN("patch #2 failed: %d", ret);
 

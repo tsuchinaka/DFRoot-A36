@@ -126,7 +126,9 @@
     <string name="state_installed">installed</string>
     <string name="state_missing">missing</string>
     <string name="state_unknown">unknown</string>
-    <string name="root_side_unpublished">The supervisor has not published state this boot. It writes /dev/dfroot-status as root, because the app cannot read root-owned paths; until it does, only the exploit mutex is readable.</string>
+    <string name="root_side_unpublished">The supervisor has not published state this boot. If su answers, upgrade the supervisor; otherwise read the boot chain card.</string>
+    <string name="root_side_repair">Upgrade supervisor</string>
+    <string name="root_side_repaired">Supervisor update requested</string>
 
     <string name="action_reboot">Reboot</string>
     <string name="action_open_manager">Open manager</string>

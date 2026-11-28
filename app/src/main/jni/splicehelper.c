@@ -17,7 +17,7 @@
 //           "sb" splice argv[4] bytes of file pages into fd 1
 //           absent: splice 16 bytes of the file page into fd 1
 
-#define OUT_FD  0
+#define OUT_FD  1
 #define PIPE_FD 1
 #define BULK_SZ 4096
 

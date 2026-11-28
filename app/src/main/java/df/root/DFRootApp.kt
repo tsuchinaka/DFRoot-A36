@@ -119,6 +119,7 @@ fun DFRootApp(vm: DfrootViewModel = viewModel()) {
                         onReboot = vm::reboot,
                         onOpenManager = vm::openManager,
                         onCopySu = vm::copySuCommand,
+                        onRepairRootSide = vm::repairRootSide,
                     )
 
                     Tab.Log -> LogScreen(

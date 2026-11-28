@@ -227,6 +227,15 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
         runJob = viewModelScope.launch {
             val startedAt = SystemClock.elapsedRealtime()
             try {
+                // Never re-run the memory-patching exploit while su already
+                // answers. The supervisor repair path is PostRoot.tick, not
+                // another kernel patch; the button is disabled too, and this
+                // guards against a stale UI state.
+                val alreadyLive = withContext(Dispatchers.IO) { RootProbe.probe().live }
+                if (alreadyLive) {
+                    finishRun(context.getString(R.string.su_ok))
+                    return@launch
+                }
                 val rc = withContext(Dispatchers.IO) { Runner.run(context, this@DfrootViewModel, false) }
                 report("\nRESULT rc=$rc\n")
 
@@ -328,6 +337,15 @@ class DfrootViewModel(app: Application) : AndroidViewModel(app), IReporter {
             snack(R.string.su_copied)
         } catch (t: Throwable) {
             Log.w(TAG, "copy su: $t")
+        }
+    }
+
+    fun repairRootSide() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = PostRoot.repair(context)
+            snack(if (ok) R.string.root_side_repaired else R.string.result_installed_not_granted)
+            val side = readRootSide()
+            _state.update { it.copy(rootSide = side) }
         }
     }
 

@@ -229,7 +229,8 @@ final class PostRoot {
             return BUSY;
         }
         long now = SystemClock.elapsedRealtime();
-        if (heartbeatFresh()) {
+        RootSide side = RootSide.read();
+        if (side.published && side.heartbeatFresh) {
             if (now - lastVerify >= VERIFY_MS) {
                 lastVerify = now;
                 if (!RootProbe.probe().live) {
@@ -238,6 +239,15 @@ final class PostRoot {
                 }
             }
             return LIVE;
+        }
+        if (!side.published && legacyHeartbeatFresh()) {
+            // A pre-4.3.1 supervisor is alive and its heartbeat is readable,
+            // but it cannot publish /dev/dfroot-status. The healthy fast path
+            // would otherwise keep it alive forever after an app update.
+            writeScripts(ctx);
+            String out = Runner.suScript(60L, launchScript(ctx));
+            Log.i(TAG, "postroot: upgrading old supervisor: " + flat(out));
+            return out == null ? DEAD : LIVE;
         }
         if (!RootProbe.probe().live) {
             return DEAD;
@@ -252,13 +262,27 @@ final class PostRoot {
         return heartbeatFresh();
     }
 
+    /** Immediate user-triggered supervisor upgrade/repair, same path as tick. */
+    static boolean repair(Context ctx) {
+        if (Runner.isClaimed(ctx) || !RootProbe.probe().live) {
+            return false;
+        }
+        writeScripts(ctx);
+        String out = Runner.suScript(60L, launchScript(ctx));
+        Log.i(TAG, "postroot: repair " + flat(out));
+        return out != null;
+    }
+
     private static boolean heartbeatFresh() {
         RootSide side = RootSide.read();
         if (side.published) {
             return side.heartbeatFresh;
         }
-        // Supervisors older than 4.3.1 only wrote a heartbeat file, and the app
-        // usually cannot read it: this fallback is for them, not the new path.
+        return legacyHeartbeatFresh();
+    }
+
+    private static boolean legacyHeartbeatFresh() {
+        // Supervisors older than 4.3.1 only wrote a heartbeat file.
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 new FileInputStream(HEARTBEAT), StandardCharsets.UTF_8))) {
             String line = reader.readLine();

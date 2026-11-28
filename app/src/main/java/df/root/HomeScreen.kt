@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -69,6 +70,7 @@ fun HomeScreen(
     onReboot: () -> Unit,
     onOpenManager: () -> Unit,
     onCopySu: () -> Unit,
+    onRepairRootSide: () -> Unit,
 ) {
     val status = LocalStatusColors.current
     val colors = MaterialTheme.colorScheme
@@ -184,7 +186,7 @@ fun HomeScreen(
         item {
             Button(
                 onClick = onRun,
-                enabled = !state.running && state.targetOk,
+                enabled = !state.running && state.targetOk && !state.rootLive,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 60.dp),
@@ -200,6 +202,7 @@ fun HomeScreen(
                     text = stringResource(
                         when {
                             state.running -> R.string.action_running
+                            state.rootLive -> R.string.root_live
                             state.chainRan -> R.string.action_jailbreak_again
                             else -> R.string.action_jailbreak
                         },
@@ -318,7 +321,14 @@ fun HomeScreen(
                     val known = side.published
                     if (!known) {
                         Caption(stringResource(R.string.root_side_unpublished))
-                        Spacer(Modifier.height(8.dp))
+                        if (state.rootLive) {
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedButton(onClick = onRepairRootSide) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(stringResource(R.string.root_side_repair))
+                            }
+                        }
                     }
                     DotRow(
                         label = stringResource(R.string.root_side_heartbeat),
