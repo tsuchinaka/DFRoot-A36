@@ -9,10 +9,10 @@ Temporary KernelSU root for the Samsung Galaxy A36 5G (`SM-A366E`) using
 DirtyFrag (`CVE-2026-43284`). Tap one button, `su` starts working, no reboot and
 no cable. It can also root on boot/unlock and re-apply the Knox Guard unlock.
 
-Current release: [`v4.3.1-ui`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.3.1-ui)
+Current release: [`v4.3.2-ui`](https://github.com/tsuchinaka/DFRoot-A36/releases/tag/v4.3.2-ui)
 - APK: `dfroot.apk`
-- Version: `4.3.1-ui` (`versionCode 33`), arm64 only
-- SHA-256: `4ebfa24721a02756badb761ec13e849e74bc863c4e96fcc1a83198983f707e41`
+- Version: `4.3.2-ui` (`versionCode 34`), arm64 only
+- SHA-256: `79d533eee8204d7bcf773dca4ef5ecacef7962bf33984ae1e705a817b6255970`
 - Signed with the v4.0 key, so it updates in place
 - CI build/tests passed; this revision was not tested on hardware
 
@@ -55,6 +55,23 @@ adb logcat -s dfroot
 ```
 
 The receiver requires `android.permission.DUMP`; ordinary apps cannot call it.
+
+## What changed in 4.3.2
+
+- Fixed the device-log blocker: `splicehelper` read modes wrote to fd 0 while
+  the parent listened on stdout (fd 1). The helper exited 0 and the parent read
+  zero bytes, so patch #2 failed with `read_vendor at 0x0 short read (4096)`.
+- A failed first read no longer "restores" uninitialized heap bytes into
+  `libbinderdebug.so`: the patcher reports how many original bytes were saved,
+  and cleanup restores only those.
+- A pre-4.3.1 supervisor is now upgraded even when its legacy heartbeat is
+  fresh; the healthy fast path no longer skips `launchScript` forever and
+  leaves every new status row unknown.
+- An **Upgrade supervisor** button appears when the root side is unpublished
+  and su answers. It uses the same launch path as the keeper tick.
+- The primary button is disabled while root is live, and `runChain` re-probes
+  before `Runner.run`, so a stale UI state cannot re-patch an already rooted
+  kernel.
 
 ## What changed in 4.3.1
 
